@@ -65,9 +65,12 @@ class SvgRenderer:
         svg.append(f'<pattern id="schematic-grid" width="20" height="20" patternUnits="userSpaceOnUse">')
         svg.append(f'<circle cx="0" cy="0" r="1.3" fill="{grid_color}" />')
         svg.append('</pattern>')
-        # Drop shadow for components
-        svg.append('<filter id="comp-shadow" x="-5%" y="-5%" width="110%" height="115%">')
-        svg.append('<feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.25"/>')
+        # Universal drop shadow for components (SVG 1.1 / Inkscape compatible)
+        svg.append('<filter id="comp-shadow" x="-10%" y="-10%" width="120%" height="125%">')
+        svg.append('  <feGaussianBlur in="SourceAlpha" stdDeviation="2.5" />')
+        svg.append('  <feOffset dx="0" dy="2" result="offsetblur" />')
+        svg.append('  <feComponentTransfer><feFuncA type="linear" slope="0.2" /></feComponentTransfer>')
+        svg.append('  <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>')
         svg.append('</filter>')
         svg.append('</defs>')
 

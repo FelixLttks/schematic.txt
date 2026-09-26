@@ -131,9 +131,11 @@ class SchematicRouter:
             tree_terminal_set = set(pins)
             net_edges: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
 
-            for pin in pins:
-                if pin in tree_nodes:
-                    continue
+            unrouted = [p for p in pins if p not in tree_nodes]
+            while unrouted:
+                pin = min(unrouted, key=lambda p: min(abs(p[0] - tn[0]) + abs(p[1] - tn[1]) for tn in tree_nodes))
+                unrouted.remove(pin)
+
                 path = self._a_star(pin, tree_nodes, net, min_x, max_x, min_y, max_y)
                 if not path:
                     continue

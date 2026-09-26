@@ -1,7 +1,7 @@
-"""2D Force-Directed & Corridor Placement Engine for electrical schematics.
+"""2D Stage-Ranked Flow & Corridor Placement Engine for electrical schematics.
 
-Arranges components in a natural, unconstrained 2D topology (hub-and-spoke, clusters, mesh)
-with guaranteed non-overlapping clearance corridors, snapped strictly to the 20px grid.
+Arranges components in a natural, professional 2D topology with left-to-right signal/power flow,
+functional clustering, and guaranteed non-overlapping clearance corridors, snapped strictly to the 20px grid.
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from schematic.models import Component, Net, Point, Rect, Schematic, Side, GRID_SIZE, snap_to_grid
 from schematic.layout.pin_allocator import allocate_pins_and_dimensions
 
-CORRIDOR_CLEARANCE = 180.0
-MARGIN = 100.0
+MARGIN = 80.0
+COLUMN_CORRIDOR = 160.0
+ROW_CORRIDOR = 80.0
 
 
 class SchematicPlacer:
@@ -25,7 +26,7 @@ class SchematicPlacer:
             self.schematic.height = 400.0
             return
 
-        # 1. Initial pin allocation to get base bounding boxes
+        # 1. Base sizing and pin orientation
         allocate_pins_and_dimensions(self.schematic, use_geometry=False)
 
         if len(comps) == 1:
@@ -35,184 +36,200 @@ class SchematicPlacer:
             self._finalize_bounds()
             return
 
-        # 2. Build connectivity graph and directional side affinity
+        # 2. Build connectivity graph with semantic weights
+        pwr_names = {"GND", "VSS"}
         adj: Dict[str, Dict[str, float]] = {c.id: {} for c in comps}
-        dir_aff: Dict[Tuple[str, str], List[float]] = {}
-        pwr_terms = ["GND", "VSS", "3V3", "5V", "VCC", "VIN", "VDD", "BATT-", "NEG"]
+        directed_adj: Dict[str, Set[str]] = {c.id: set() for c in comps}
 
         for net in self.schematic.nets:
             nu = net.name.upper()
-            is_pwr = len(net.connections) >= 4 or any(term in nu for term in pwr_terms)
-            w = 0.05 if is_pwr else 8.0
-            cids = list({conn.component_id for conn in net.connections if conn.component_id in adj})
+            is_global_pwr = len(net.connections) >= 5 or nu in pwr_names
+            cids = list({conn.component_id for conn in net.connections if conn.component_id in self.schematic.components})
+
+            if is_global_pwr:
+                w = 0.1
+            elif len(net.connections) == 2:
+                if any(k in nu for k in ["SENSE", "SHUNT", "DIFF"]):
+                    w = 50.0
+                elif any(k in nu for k in ["BATT", "5V", "PWR", "DCDC", "DISP", "CTRL", "LED", "RAW", "IN", "OUT"]):
+                    w = 25.0
+                else:
+                    w = 15.0
+            else:
+                w = 8.0
+
             for i in range(len(cids)):
                 for j in range(i + 1, len(cids)):
                     u, v = cids[i], cids[j]
                     adj[u][v] = adj[u].get(v, 0.0) + w
                     adj[v][u] = adj[v].get(u, 0.0) + w
 
-            if not is_pwr:
-                for conn1 in net.connections:
-                    c1 = self.schematic.components.get(conn1.component_id)
-                    p1 = c1.pins.get(conn1.pin_id) if conn1.pin_id else c1.get_pin(conn1.pin_name) if c1 else None
-                    for conn2 in net.connections:
-                        if conn2.component_id == conn1.component_id:
-                            continue
-                        c2 = self.schematic.components.get(conn2.component_id)
-                        p2 = c2.pins.get(conn2.pin_id) if conn2.pin_id else c2.get_pin(conn2.pin_name) if c2 else None
-                        pair = (c1.id, c2.id)
-                        vec = dir_aff.setdefault(pair, [0.0, 0.0])
-                        if p1 and p1.side_specified:
-                            if p1.side == Side.RIGHT: vec[0] += 1.0
-                            elif p1.side == Side.LEFT: vec[0] -= 1.0
-                            elif p1.side == Side.BOTTOM: vec[1] += 1.0
-                            elif p1.side == Side.TOP: vec[1] -= 1.0
-                        if p2 and p2.side_specified:
-                            if p2.side == Side.LEFT: vec[0] += 1.0
-                            elif p2.side == Side.RIGHT: vec[0] -= 1.0
-                            elif p2.side == Side.TOP: vec[1] += 1.0
-                            elif p2.side == Side.BOTTOM: vec[1] -= 1.0
+            if not is_global_pwr and len(net.connections) >= 2:
+                src_cid = net.connections[0].component_id
+                for tgt in net.connections[1:]:
+                    tgt_cid = tgt.component_id
+                    if src_cid != tgt_cid and src_cid in self.schematic.components and tgt_cid in self.schematic.components:
+                        directed_adj[src_cid].add(tgt_cid)
 
-        # Central hub (highest degree / pin count)
-        hub = max(comps, key=lambda c: (sum(adj[c.id].values()), len(c.pins)))
-        pos: Dict[str, List[float]] = {hub.id: [0.0, 0.0]}
+        # 3. Identify central Hub component (e.g. microcontroller)
+        hub = max(comps, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
 
-        # Smart initial seeding: place direct peers in their pin-facing directions
-        right_peers = []
-        left_peers = []
-        top_peers = []
-        bottom_peers = []
-        for c in comps:
-            if c.id == hub.id:
+        # 4. Determine side relative to Hub for all components
+        comp_side: Dict[str, Side] = {hub.id: Side.LEFT}
+        side_votes: Dict[str, Dict[Side, float]] = {}
+
+        for net in self.schematic.nets:
+            if len(net.connections) >= 5 or net.name.upper() in pwr_names:
                 continue
-            aff = dir_aff.get((hub.id, c.id), [0.0, 0.0])
-            if aff[0] > 0.5:
-                right_peers.append(c.id)
-            elif aff[0] < -0.5:
-                left_peers.append(c.id)
-            elif aff[1] > 0.5:
-                bottom_peers.append(c.id)
-            elif aff[1] < -0.5:
-                top_peers.append(c.id)
-            else:
-                left_peers.append(c.id)
+            h_conns = [c for c in net.connections if c.component_id == hub.id]
+            o_conns = [c for c in net.connections if c.component_id != hub.id]
+            if h_conns and o_conns:
+                is_pwr = any(k in net.name.upper() for k in ["3V3", "5V", "VCC", "VIN", "VDD"])
+                w_conn = 0.5 if is_pwr else 10.0
+                for hc in h_conns:
+                    h_pin = hub.pins.get(hc.pin_id) if hc.pin_id else hub.get_pin(hc.pin_name)
+                    side = h_pin.side if h_pin else Side.LEFT
+                    for oc in o_conns:
+                        side_votes.setdefault(oc.component_id, {})
+                        side_votes[oc.component_id][side] = side_votes[oc.component_id].get(side, 0.0) + w_conn
 
-        for idx, cid in enumerate(right_peers):
-            pos[cid] = [360.0, (idx - len(right_peers) / 2.0 + 0.5) * 160.0]
-        for idx, cid in enumerate(left_peers):
-            pos[cid] = [-360.0, (idx - len(left_peers) / 2.0 + 0.5) * 160.0]
-        for idx, cid in enumerate(top_peers):
-            pos[cid] = [(idx - len(top_peers) / 2.0 + 0.5) * 160.0, -320.0]
-        for idx, cid in enumerate(bottom_peers):
-            pos[cid] = [(idx - len(bottom_peers) / 2.0 + 0.5) * 160.0, 320.0]
+        for cid, votes in side_votes.items():
+            comp_side[cid] = max(votes.keys(), key=lambda s: votes[s])
 
-        # Seed chained components (not directly connected to hub) relative to their best peer
-        unconnected_to_hub = [c for c in comps if c.id != hub.id and hub.id not in adj[c.id]]
-        for c in unconnected_to_hub:
-            best_peer = max(adj[c.id].keys(), key=lambda p: adj[c.id][p], default=None)
-            if best_peer and best_peer in pos:
-                aff = dir_aff.get((best_peer, c.id), [0.0, 0.0])
-                ox = aff[0] * 200.0 if aff[0] != 0 else -200.0
-                oy = aff[1] * 180.0 if aff[1] != 0 else 0.0
-                pos[c.id] = [pos[best_peer][0] + ox, pos[best_peer][1] + oy]
-
-        # 3. Force-directed relaxation with Fruchterman-Reingold cooling
-        target_dist = 280.0
-        temp = 25.0
-        dt = 0.94
-
-        for it in range(100):
-            forces: Dict[str, List[float]] = {c.id: [0.0, 0.0] for c in comps}
-
-            # Attractive spring forces
-            for u in comps:
-                for v_id, weight in adj[u.id].items():
-                    dx = pos[v_id][0] - pos[u.id][0]
-                    dy = pos[v_id][1] - pos[u.id][1]
-                    dist = math.hypot(dx, dy) or 1.0
-                    f = weight * (dist - target_dist) / target_dist
-                    forces[u.id][0] += f * (dx / dist)
-                    forces[u.id][1] += f * (dy / dist)
-
-            # Directional side affinity constraint forces
-            for (u_id, v_id), aff in dir_aff.items():
-                ax, ay = aff
-                dx = pos[v_id][0] - pos[u_id][0]
-                dy = pos[v_id][1] - pos[u_id][1]
-                if ax > 0 and dx < 220.0:
-                    forces[v_id][0] += 6.0
-                    forces[u_id][0] -= 6.0
-                elif ax < 0 and dx > -220.0:
-                    forces[v_id][0] -= 6.0
-                    forces[u_id][0] += 6.0
-                if ay > 0 and dy < 180.0:
-                    forces[v_id][1] += 6.0
-                    forces[u_id][1] -= 6.0
-                elif ay < 0 and dy > -180.0:
-                    forces[v_id][1] -= 6.0
-                    forces[u_id][1] += 6.0
-                if abs(ax) > 0 and ay == 0.0:
-                    dy_align = pos[v_id][1] - pos[u_id][1]
-                    forces[v_id][1] -= 0.05 * dy_align
-                    forces[u_id][1] += 0.05 * dy_align
-
-            # Repulsive forces between all components
-            for i in range(len(comps)):
-                for j in range(i + 1, len(comps)):
-                    u, v = comps[i], comps[j]
-                    dx = pos[v.id][0] - pos[u.id][0]
-                    dy = pos[v.id][1] - pos[u.id][1]
-                    dist = math.hypot(dx, dy) or 1.0
-                    if dist < 420.0:
-                        rep = 20000.0 / (dist * dist)
-                        forces[u.id][0] -= rep * (dx / dist)
-                        forces[u.id][1] -= rep * (dy / dist)
-                        forces[v.id][0] += rep * (dx / dist)
-                        forces[v.id][1] += rep * (dy / dist)
-
-            for c in comps:
-                mag = math.hypot(forces[c.id][0], forces[c.id][1]) or 1.0
-                step = min(mag, temp)
-                pos[c.id][0] += (forces[c.id][0] / mag) * step
-                pos[c.id][1] += (forces[c.id][1] / mag) * step
-
-            temp *= dt
-
-        # 4. VPSC separation passes to guarantee clear corridors between blocks
-        for _ in range(60):
-            moved = False
-            for i in range(len(comps)):
-                for j in range(i + 1, len(comps)):
-                    u, v = comps[i], comps[j]
-                    dx = pos[v.id][0] - pos[u.id][0]
-                    dy = pos[v.id][1] - pos[u.id][1]
-                    min_dx = (u.width + v.width) / 2.0 + CORRIDOR_CLEARANCE
-                    min_dy = (u.height + v.height) / 2.0 + CORRIDOR_CLEARANCE
-                    ox = min_dx - abs(dx)
-                    oy = min_dy - abs(dy)
-                    if ox > 0 and oy > 0:
-                        moved = True
-                        if ox < oy:
-                            s = 1.0 if dx >= 0 else -1.0
-                            pos[u.id][0] -= (ox / 2.0) * s
-                            pos[v.id][0] += (ox / 2.0) * s
-                        else:
-                            s = 1.0 if dy >= 0 else -1.0
-                            pos[u.id][1] -= (oy / 2.0) * s
-                            pos[v.id][1] += (oy / 2.0) * s
-            if not moved:
+        # Propagate sides for unassigned chained components
+        unassigned = [c.id for c in comps if c.id not in comp_side and c.id != hub.id]
+        while unassigned:
+            progress = False
+            for cid in list(unassigned):
+                nbrs = [nbr for nbr in adj[cid] if nbr in comp_side]
+                if nbrs:
+                    best_nbr = max(nbrs, key=lambda n: adj[cid][n])
+                    comp_side[cid] = comp_side[best_nbr]
+                    unassigned.remove(cid)
+                    progress = True
+            if not progress:
+                for cid in unassigned:
+                    comp_side[cid] = Side.LEFT
                 break
 
-        # 5. Normalize origin and snap to 20px grid
-        min_px = min(pos[c.id][0] for c in comps)
-        min_py = min(pos[c.id][1] for c in comps)
-        for c in comps:
-            c.x = snap_to_grid(pos[c.id][0] - min_px + MARGIN, GRID_SIZE)
-            c.y = snap_to_grid(pos[c.id][1] - min_py + MARGIN, GRID_SIZE)
+        # 5. Coupled pairs (Kelvin sense / differential measurement)
+        # Sensed shunt is parent, monitoring IC is child placed directly below it
+        parent_of: Dict[str, str] = {}
+        child_of: Dict[str, str] = {}
+        for net in self.schematic.nets:
+            nu = net.name.upper()
+            if len(net.connections) == 2 and any(k in nu for k in ["SENSE", "SHUNT", "DIFF"]):
+                u_id = net.connections[0].component_id
+                v_id = net.connections[1].component_id
+                if u_id != hub.id and v_id != hub.id and u_id in self.schematic.components and v_id in self.schematic.components:
+                    u = self.schematic.components[u_id]
+                    v = self.schematic.components[v_id]
+                    p, ch = (u.id, v.id) if len(u.pins) <= len(v.pins) else (v.id, u.id)
+                    if ch not in child_of and p not in parent_of.values():
+                        parent_of[p] = ch
+                        child_of[ch] = p
 
-        # 6. Re-assign pins with true 2D geometry facing connected peers
+        # 6. Topological flow depth for left components
+        left_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.LEFT and c.id not in child_of]
+        depth: Dict[str, int] = {}
+
+        for c in left_comps:
+            in_deg = sum(1 for src in left_comps if c.id in directed_adj.get(src.id, set()))
+            if in_deg == 0:
+                depth[c.id] = 0
+
+        if not depth and left_comps:
+            min_c = min(left_comps, key=lambda c: sum(1 for src in left_comps if c.id in directed_adj.get(src.id, set())))
+            depth[min_c.id] = 0
+
+        for _ in range(len(left_comps) + 1):
+            for u in left_comps:
+                if u.id in depth:
+                    for v_id in directed_adj.get(u.id, set()):
+                        if any(c.id == v_id for c in left_comps):
+                            depth[v_id] = max(depth.get(v_id, 0), depth[u.id] + 1)
+
+        for c in left_comps:
+            if c.id not in depth:
+                known = [k for k in depth if k in adj[c.id]]
+                depth[c.id] = max(depth[k] + 1 for k in known) if known else 0
+
+        # Hub-connected sensor or secondary nodes that had in-degree 0 placed near the Hub
+        max_d = max(depth.values(), default=0)
+        for c in left_comps:
+            is_power_source = any(k in c.id.upper() or k in c.type_name.upper() for k in ["BATTERY", "SUPPLY", "CELL", "VCC"])
+            if depth[c.id] == 0 and not is_power_source and hub.id in adj[c.id]:
+                depth[c.id] = max(1, max_d - 1)
+
+        for ch, p in child_of.items():
+            depth[ch] = depth.get(p, 0)
+
+        # 7. Map to column indices
+        max_left_depth = max(depth.values(), default=0)
+        hub_col = max_left_depth + 1
+
+        comp_col: Dict[str, int] = {hub.id: hub_col}
+        for c in left_comps:
+            comp_col[c.id] = depth[c.id]
+        for ch, p in child_of.items():
+            comp_col[ch] = comp_col[p]
+
+        right_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.RIGHT]
+        for c in right_comps:
+            comp_col[c.id] = hub_col + 1
+
+        used_cols = sorted(set(comp_col.values()))
+        remap_col = {old: new for new, old in enumerate(used_cols)}
+        for cid in comp_col:
+            comp_col[cid] = remap_col[comp_col[cid]]
+
+        columns: Dict[int, List[Component]] = {}
+        for c in comps:
+            col_idx = comp_col[c.id]
+            columns.setdefault(col_idx, []).append(c)
+
+        # 8. Compute column X positions
+        col_x: Dict[int, float] = {}
+        cur_x = MARGIN
+        sorted_col_keys = sorted(columns.keys())
+        for col_idx in sorted_col_keys:
+            col_comps = columns[col_idx]
+            max_w = max(c.width for c in col_comps)
+            col_x[col_idx] = cur_x
+            cur_x += max_w + COLUMN_CORRIDOR
+
+        # 9. Assign Y coordinates within each column
+        for col_idx in sorted_col_keys:
+            col_comps = columns[col_idx]
+
+            def comp_y_sort(c: Component):
+                if c.id in child_of:
+                    return 100
+                is_pwr_path = any(k in c.id.upper() or k in c.type_name.upper() for k in ["BATTERY", "FUSE", "DCDC", "SWITCH", "SUPPLY"])
+                if is_pwr_path:
+                    return 0
+                if c.id in parent_of:
+                    return 10
+                return 30
+
+            col_comps.sort(key=comp_y_sort)
+
+            cur_y = MARGIN
+            for c in col_comps:
+                c.x = snap_to_grid(col_x[col_idx], GRID_SIZE)
+                c.y = snap_to_grid(cur_y, GRID_SIZE)
+                cur_y += c.height + ROW_CORRIDOR
+
+        # Post-process coupled pairs: attach child directly under parent
+        for p_id, ch_id in parent_of.items():
+            p = self.schematic.components[p_id]
+            ch = self.schematic.components[ch_id]
+            ch.x = p.x
+            ch.y = snap_to_grid(p.y + p.height + 60.0, GRID_SIZE)
+
+        # 10. Re-assign pins with true 2D geometry facing connected peers
         allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-        # 7. Resolve equivalent pins (e.g. multiple GND/3V3 pins) to nearest candidate
+        # 11. Resolve equivalent pins (e.g. multiple GND/3V3 pins) to nearest candidate
         self._resolve_equivalent_pins()
         self._finalize_bounds()
 
@@ -268,4 +285,3 @@ class SchematicPlacer:
 def place_schematic(schematic: Schematic) -> None:
     placer = SchematicPlacer(schematic)
     placer.place()
-
