@@ -159,6 +159,36 @@ class TestLayoutAndRouting(unittest.TestCase):
             check_val(j.point.x, f"Junction point.x [{j.net_name}]")
             check_val(j.point.y, f"Junction point.y [{j.net_name}]")
 
+    def test_all_connected_pins_touch_wire_terminals(self):
+        """Verifies that every connection has a wire segment meeting the pin terminal exactly."""
+        examples = [
+            "examples/esp32_sd_spi.txt",
+            "examples/esp32_sensors_bus.txt",
+            "examples/simple_quickstart.txt",
+        ]
+        for ex_path in examples:
+            with open(ex_path) as f:
+                content = f.read()
+            sch = process_schematic(content)
+            for net in sch.nets:
+                for conn in net.connections:
+                    comp = sch.components.get(conn.component_id)
+                    self.assertIsNotNone(comp, f"Component {conn.component_id} not found in {ex_path}")
+                    pin = comp.pins.get(conn.pin_name)
+                    self.assertIsNotNone(pin, f"Pin {conn.pin_name} not found on {conn.component_id} in {ex_path}")
+                    pos = pin.position
+                    # Must have at least one wire segment touching this pin terminal
+                    has_touching_wire = any(
+                        (w.start.distance_to(pos) < 0.5 or w.end.distance_to(pos) < 0.5)
+                        and w.net_name == net.name
+                        for w in sch.wires
+                    )
+                    self.assertTrue(
+                        has_touching_wire,
+                        f"Pin {conn.component_id}.{conn.pin_name} (net {net.name}) at {pos} has no touching wire in {ex_path}!",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
+
