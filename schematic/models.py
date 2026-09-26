@@ -14,10 +14,20 @@ class Side(str, Enum):
     BOTTOM = "bottom"
 
 
+GRID_SIZE: float = 20.0
+
+
+def snap_to_grid(val: float, grid: float = GRID_SIZE) -> float:
+    return round(val / grid) * grid
+
+
 @dataclass(frozen=True)
 class Point:
     x: float
     y: float
+
+    def snapped(self, grid: float = GRID_SIZE) -> Point:
+        return Point(snap_to_grid(self.x, grid), snap_to_grid(self.y, grid))
 
     def distance_to(self, other: Point) -> float:
         return math.hypot(self.x - other.x, self.y - other.y)

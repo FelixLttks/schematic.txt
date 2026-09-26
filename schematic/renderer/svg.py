@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import html
+import math
 from typing import List, Optional
 from schematic.models import Component, Pin, Point, Schematic, Side, WireJunction, WireSegment
 
@@ -39,10 +40,15 @@ class SvgRenderer:
             junction_stroke = "#ffffff"
 
         pad = 60.0
-        min_x = min([c.x - 50.0 for c in self.schematic.components.values()] + [w.start.x for w in self.schematic.wires] + [0.0]) - pad
-        min_y = min([c.y - 50.0 for c in self.schematic.components.values()] + [w.start.y for w in self.schematic.wires] + [0.0]) - pad
-        max_x = max([c.x + c.width + 50.0 for c in self.schematic.components.values()] + [w.end.x for w in self.schematic.wires] + [self.schematic.width]) + pad
-        max_y = max([c.y + c.height + 50.0 for c in self.schematic.components.values()] + [w.end.y for w in self.schematic.wires] + [self.schematic.height]) + pad
+        raw_min_x = min([c.x - 50.0 for c in self.schematic.components.values()] + [w.start.x for w in self.schematic.wires] + [0.0]) - pad
+        raw_min_y = min([c.y - 50.0 for c in self.schematic.components.values()] + [w.start.y for w in self.schematic.wires] + [0.0]) - pad
+        raw_max_x = max([c.x + c.width + 50.0 for c in self.schematic.components.values()] + [w.end.x for w in self.schematic.wires] + [self.schematic.width]) + pad
+        raw_max_y = max([c.y + c.height + 50.0 for c in self.schematic.components.values()] + [w.end.y for w in self.schematic.wires] + [self.schematic.height]) + pad
+
+        min_x = math.floor(raw_min_x / 20.0) * 20.0
+        min_y = math.floor(raw_min_y / 20.0) * 20.0
+        max_x = math.ceil(raw_max_x / 20.0) * 20.0
+        max_y = math.ceil(raw_max_y / 20.0) * 20.0
 
         vb_w = max(max_x - min_x, 600.0)
         vb_h = max(max_y - min_y, 450.0)
@@ -50,9 +56,9 @@ class SvgRenderer:
         svg = []
         svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x:.1f} {min_y:.1f} {vb_w:.1f} {vb_h:.1f}" class="schematic-canvas">')
         svg.append('<defs>')
-        # Dot grid pattern
+        # Dot grid pattern strictly aligned to coordinate (0, 0)
         svg.append(f'<pattern id="schematic-grid" width="20" height="20" patternUnits="userSpaceOnUse">')
-        svg.append(f'<circle cx="2" cy="2" r="1.2" fill="{grid_color}" />')
+        svg.append(f'<circle cx="0" cy="0" r="1.3" fill="{grid_color}" />')
         svg.append('</pattern>')
         # Drop shadow for components
         svg.append('<filter id="comp-shadow" x="-5%" y="-5%" width="110%" height="115%">')
@@ -115,8 +121,8 @@ class SvgRenderer:
             f'rx="4" ry="4" fill="{comp_bg}" stroke="{comp_border}" stroke-width="1.6" filter="url(#comp-shadow)" />'
         )
 
-        # Header banner
-        header_h = 32.0
+        # Header banner (40px = 2 grid units)
+        header_h = 40.0
         parts.append(
             f'<path d="M {comp.x:.1f},{comp.y + 4.0:.1f} a 4,4 0 0,1 4,-4 l {comp.width - 8.0:.1f},0 a 4,4 0 0,1 4,4 l 0,{header_h - 4.0:.1f} l {-comp.width:.1f},0 z" '
             f'fill="{header_bg}" />'
@@ -129,7 +135,7 @@ class SvgRenderer:
         # Title text
         escaped_id = html.escape(comp.id)
         parts.append(
-            f'<text x="{comp.x + 10.0:.1f}" y="{comp.y + 15.0:.1f}" '
+            f'<text x="{comp.x + 10.0:.1f}" y="{comp.y + 18.0:.1f}" '
             f'font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="{text_title}">'
             f'{escaped_id}</text>'
         )
@@ -138,7 +144,7 @@ class SvgRenderer:
         if comp.type_name:
             escaped_type = html.escape(comp.type_name)
             parts.append(
-                f'<text x="{comp.x + 10.0:.1f}" y="{comp.y + 26.0:.1f}" '
+                f'<text x="{comp.x + 10.0:.1f}" y="{comp.y + 31.0:.1f}" '
                 f'font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="{text_subtitle}">'
                 f'{escaped_type}</text>'
             )

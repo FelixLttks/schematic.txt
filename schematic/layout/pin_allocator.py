@@ -5,9 +5,10 @@ import math
 from typing import Dict, List, Optional, Set, Tuple
 from schematic.models import Component, Net, Pin, Point, Side
 
-PIN_PITCH = 24.0
-PIN_LEAD_LEN = 16.0
-HEADER_HEIGHT = 34.0
+GRID_SIZE = 20.0
+PIN_PITCH = 20.0
+PIN_LEAD_LEN = 20.0
+HEADER_HEIGHT = 40.0
 MIN_WIDTH = 140.0
 MIN_HEIGHT = 80.0
 
@@ -16,9 +17,9 @@ def allocate_pins_and_dimensions(schematic) -> None:
     """
     Assigns sides (LEFT, RIGHT) and layout coordinates
     to all pins of all components in the schematic.
-    Uses horizontal pin leads for standard clean schematic presentation.
+    Strictly aligns all dimensions and coordinates to GRID_SIZE (20.0).
     """
-    # 1. First build connection map: for each (comp_id, pin_name), which other components does it connect to?
+    # 1. Build connection map: for each (comp_id, pin_name), which other components does it connect to?
     pin_peer_map: Dict[Tuple[str, str], List[str]] = {}
     for net in schematic.nets:
         connected_comp_ids = list({conn.component_id for conn in net.connections})
@@ -41,20 +42,6 @@ def allocate_pins_and_dimensions(schematic) -> None:
             else:
                 right_pins.append(pin)
 
-        # Balance sides if one side is overloaded and the other is empty
-        if not left_pins and len(right_pins) > 2:
-            half = len(right_pins) // 2
-            left_pins = right_pins[:half]
-            right_pins = right_pins[half:]
-            for p in left_pins:
-                p.side = Side.LEFT
-        elif not right_pins and len(left_pins) > 2:
-            half = len(left_pins) // 2
-            right_pins = left_pins[half:]
-            left_pins = left_pins[:half]
-            for p in right_pins:
-                p.side = Side.RIGHT
-
         # Sort pins along each side
         _sort_side_pins(left_pins)
         _sort_side_pins(right_pins)
@@ -64,13 +51,15 @@ def allocate_pins_and_dimensions(schematic) -> None:
         max_label_right = max((len(p.display_name) for p in right_pins), default=0)
         title_len = max(len(comp.id), len(comp.type_name))
 
-        # Approx font width = 7.5px
         content_width = (max_label_left + max_label_right) * 7.5 + 44.0
         header_width = title_len * 8.5 + 32.0
 
-        comp.width = max(MIN_WIDTH, content_width, header_width)
+        raw_width = max(MIN_WIDTH, content_width, header_width)
+        comp.width = float(math.ceil(raw_width / GRID_SIZE) * GRID_SIZE)
+
         max_pins_on_side = max(len(left_pins), len(right_pins), 1)
-        comp.height = max(MIN_HEIGHT, max_pins_on_side * PIN_PITCH + HEADER_HEIGHT + 20.0)
+        raw_height = max(MIN_HEIGHT, max_pins_on_side * PIN_PITCH + HEADER_HEIGHT + 20.0)
+        comp.height = float(math.ceil(raw_height / GRID_SIZE) * GRID_SIZE)
 
         # Now compute exact pin coordinates
         _calculate_pin_positions(comp, left_pins, right_pins)
@@ -78,7 +67,7 @@ def allocate_pins_and_dimensions(schematic) -> None:
 
 def _choose_pin_side(comp: Component, pin: Pin, peers: List[str], all_comps: Dict[str, Component]) -> Side:
     """Chooses LEFT or RIGHT side for the pin based on peer placement and signal role."""
-    # 1. Peer orientation preference
+    # 1. Peer orientation preference: pin points towards the majority of its peers
     if peers:
         dx_sum = 0.0
         for peer_id in peers:
@@ -86,9 +75,9 @@ def _choose_pin_side(comp: Component, pin: Pin, peers: List[str], all_comps: Dic
             if peer:
                 dx_sum += peer.center.x - comp.center.x
 
-        if dx_sum < -20.0:
+        if dx_sum < -5.0:
             return Side.LEFT
-        elif dx_sum > 20.0:
+        elif dx_sum > 5.0:
             return Side.RIGHT
 
     # 2. Convention fallback: Power/Inputs on LEFT, GND/Outputs on RIGHT
@@ -108,16 +97,12 @@ def _sort_side_pins(pins: List[Pin]) -> None:
     def sort_key(pin: Pin) -> int:
         p_name = pin.name.upper()
         p_label = pin.label.upper()
-        # Top: Power
         if any(w in p_name or w in p_label for w in ["VCC", "3V3", "5V", "VIN", "VDD"]):
             return 0
-        # Bottom: GND
         if "GND" in p_name or "GND" in p_label or "VSS" in p_name:
             return 100
-        # Clocks
         if any(w in p_name or w in p_label for w in ["SCL", "SCK", "CLK"]):
             return 20
-        # Data
         if any(w in p_name or w in p_label for w in ["SDA", "MOSI", "MISO", "TX", "RX"]):
             return 30
         return 50
@@ -126,17 +111,17 @@ def _sort_side_pins(pins: List[Pin]) -> None:
 
 
 def _calculate_pin_positions(comp: Component, left_pins: List[Pin], right_pins: List[Pin]) -> None:
-    """Assigns lead_start and terminal position for each pin."""
-    start_y = comp.y + HEADER_HEIGHT + 16.0
+    """Assigns lead_start and terminal position for each pin snapped to grid."""
+    start_y = round((comp.y + HEADER_HEIGHT + 20.0) / GRID_SIZE) * GRID_SIZE
 
     # LEFT pins
     for i, pin in enumerate(left_pins):
         py = start_y + i * PIN_PITCH
-        pin.lead_start = Point(comp.x, py)
-        pin.position = Point(comp.x - PIN_LEAD_LEN, py)
+        pin.lead_start = Point(round(comp.x / GRID_SIZE) * GRID_SIZE, py)
+        pin.position = Point(pin.lead_start.x - PIN_LEAD_LEN, py)
 
     # RIGHT pins
     for i, pin in enumerate(right_pins):
         py = start_y + i * PIN_PITCH
-        pin.lead_start = Point(comp.x + comp.width, py)
-        pin.position = Point(comp.x + comp.width + PIN_LEAD_LEN, py)
+        pin.lead_start = Point(round((comp.x + comp.width) / GRID_SIZE) * GRID_SIZE, py)
+        pin.position = Point(pin.lead_start.x + PIN_LEAD_LEN, py)
