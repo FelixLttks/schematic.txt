@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Schematic.txt</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="workspace">
+    <!-- Left Panel: Text Editor -->
+    <section class="editor-pane">
+      <div class="pane-bar">
+        <span class="pane-title">schematic.txt</span>
+        <div class="bar-actions">
+          <select id="example-select" aria-label="Load Example">
+            <option value="" disabled selected>Load example...</option>
+          </select>
+          <button id="btn-compile" title="Compile (Ctrl+Enter)">Compile</button>
+        </div>
+      </div>
+      <div class="editor-container">
+        <div id="line-numbers" class="line-numbers">1</div>
+        <textarea id="code-input" spellcheck="false" placeholder="# Write your schematic here...
+# Example:
+# ESP32.GND -> Sensor.GND, OLED.GND
+# ESP32.3V3 -> Sensor.VCC, OLED.VCC
+# ESP32.GPIO21(SDA) -> Sensor.SDA, OLED.SDA : I2C_SDA"></textarea>
+      </div>
+      <div class="pane-footer">
+        <span id="status-indicator" class="status ok">Ready</span>
+        <span class="shortcut-hint">Ctrl+Enter to compile</span>
+      </div>
+    </section>
+
+    <!-- Resizer Divider -->
+    <div id="drag-divider" class="divider"></div>
+
+    <!-- Right Panel: Schematic Visualization / Error -->
+    <section class="preview-pane">
+      <div class="pane-bar">
+        <span class="pane-title">2D Schematic View</span>
+        <div class="bar-actions">
+          <button id="btn-theme" title="Toggle Theme">Theme</button>
+          <button id="btn-reset-zoom" title="Reset View">Reset</button>
+          <button id="btn-download" title="Export SVG">Export SVG</button>
+        </div>
+      </div>
+      <div id="canvas-wrapper" class="canvas-wrapper">
+        <div id="error-box" class="error-box hidden">
+          <div class="error-title">Syntax / Layout Error</div>
+          <div id="error-message" class="error-message"></div>
+          <div id="error-line-info" class="error-line-info"></div>
+        </div>
+        <div id="svg-viewport" class="svg-viewport">
+          <div class="empty-state">Loading schematic...</div>
+        </div>
+      </div>
+      <div class="pane-footer preview-footer">
+        <span id="canvas-info">Scroll to zoom &middot; Drag to pan</span>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
