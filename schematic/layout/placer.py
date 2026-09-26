@@ -1,21 +1,17 @@
-"""2D Grid & Corridor Placement Engine for electrical schematics.
+"""2D Force-Directed & Corridor Placement Engine for electrical schematics.
 
-Arranges components in clean topological columns and rows with guaranteed
-inter-column and inter-row routing corridors so wires never need to cross components.
+Arranges components in a natural, unconstrained 2D topology (hub-and-spoke, clusters, mesh)
+with guaranteed non-overlapping clearance corridors, snapped strictly to the 20px grid.
 """
 
 from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Set, Tuple
-from schematic.models import Component, Net, Point, Rect, Schematic
+from schematic.models import Component, Net, Point, Rect, Schematic, GRID_SIZE, snap_to_grid
 from schematic.layout.pin_allocator import allocate_pins_and_dimensions
 
-GRID_SIZE = 20.0
-CORRIDOR_X = 180.0
-ROW_GAP = 60.0
-TOP_CORRIDOR_H = 100.0
-BOTTOM_CORRIDOR_H = 100.0
-MARGIN_LEFT = 80.0
+CORRIDOR_CLEARANCE = 120.0
+MARGIN = 100.0
 
 
 class SchematicPlacer:
@@ -29,104 +25,118 @@ class SchematicPlacer:
             self.schematic.height = 400.0
             return
 
+        # 1. Initial pin allocation to get base bounding boxes
+        allocate_pins_and_dimensions(self.schematic, use_geometry=False)
+
         if len(comps) == 1:
-            comps[0].x = 100.0
-            comps[0].y = 100.0
-            allocate_pins_and_dimensions(self.schematic)
+            comps[0].x = MARGIN
+            comps[0].y = MARGIN
+            allocate_pins_and_dimensions(self.schematic, use_geometry=True)
             self._finalize_bounds()
             return
 
-        # 1. First initial pass to get estimated widths/heights
-        allocate_pins_and_dimensions(self.schematic)
-
-        # 2. Identify Hub and classify components into columns
-        col_0, col_1, col_2 = self._classify_columns(comps)
-
-        # 3. Position components in clean 2D grid columns strictly on grid
-        columns = [c for c in [col_0, col_1, col_2] if c]
-
-        curr_x = round(MARGIN_LEFT / GRID_SIZE) * GRID_SIZE
-        start_y = round((TOP_CORRIDOR_H + 40.0) / GRID_SIZE) * GRID_SIZE
-
-        for col_idx, col_comps in enumerate(columns):
-            max_w = max(c.width for c in col_comps)
-
-            # Stack components vertically in this column
-            curr_y = start_y
-            for comp in col_comps:
-                comp.x = float(round(curr_x / GRID_SIZE) * GRID_SIZE)
-                comp.y = float(round(curr_y / GRID_SIZE) * GRID_SIZE)
-                curr_y += comp.height + ROW_GAP
-
-            # Next column starts after this column + corridor
-            curr_x += max_w + CORRIDOR_X
-
-        # 4. Finalize pin coordinates based on exact column positions
-        allocate_pins_and_dimensions(self.schematic)
-
-        # 5. Set canvas bounds snapped to grid
-        self._finalize_bounds()
-
-    def _classify_columns(
-        self, comps: List[Component]
-    ) -> Tuple[List[Component], List[Component], List[Component]]:
-        """
-        Classifies components into 3 standard schematic stages:
-          Column 0: Power / Regulators / USB / Inputs
-          Column 1: Main MCU / Controller Hub
-          Column 2: Peripherals / Sensors / Displays / Actuators
-        """
-        if len(comps) == 2:
-            return [comps[0]], [comps[1]], []
-
-        # Find component with most pins/connections -> designated Hub
-        degrees: Dict[str, int] = {c.id: len(c.pins) for c in comps}
+        # 2. Build connectivity graph
+        adj: Dict[str, Dict[str, float]] = {c.id: {} for c in comps}
         for net in self.schematic.nets:
-            cids = list({conn.component_id for conn in net.connections if conn.component_id in degrees})
-            for cid in cids:
-                degrees[cid] += 1
+            cids = list({conn.component_id for conn in net.connections if conn.component_id in adj})
+            for i in range(len(cids)):
+                for j in range(i + 1, len(cids)):
+                    u, v = cids[i], cids[j]
+                    adj[u][v] = adj[u].get(v, 0.0) + 1.0
+                    adj[v][u] = adj[v].get(u, 0.0) + 1.0
 
-        hub = max(comps, key=lambda c: (degrees.get(c.id, 0), len(c.pins)))
+        # Central hub (highest degree / pin count)
+        hub = max(comps, key=lambda c: (sum(adj[c.id].values()), len(c.pins)))
+        pos: Dict[str, List[float]] = {hub.id: [0.0, 0.0]}
+        peers = [c for c in comps if c.id != hub.id]
 
-        col_0: List[Component] = []  # Left
-        col_1: List[Component] = [hub]  # Center (Hub)
-        col_2: List[Component] = []  # Right (Peripherals)
+        if len(peers) == 1:
+            pos[peers[0].id] = [280.0, 0.0]
+        else:
+            for idx, c in enumerate(peers):
+                angle = 2.0 * math.pi * idx / len(peers)
+                pos[c.id] = [320.0 * math.cos(angle), 320.0 * math.sin(angle)]
 
-        for comp in comps:
-            if comp.id == hub.id:
-                continue
+        # 3. Force-directed relaxation
+        target_dist = 280.0
+        for _ in range(60):
+            forces: Dict[str, List[float]] = {c.id: [0.0, 0.0] for c in comps}
 
-            cid_u = comp.id.upper()
-            c_type_u = comp.type_name.upper()
+            # Attractive spring forces
+            for u in comps:
+                for v_id, weight in adj[u.id].items():
+                    dx = pos[v_id][0] - pos[u.id][0]
+                    dy = pos[v_id][1] - pos[u.id][1]
+                    dist = math.hypot(dx, dy) or 1.0
+                    f = weight * (dist - target_dist) * 0.05
+                    forces[u.id][0] += f * (dx / dist)
+                    forces[u.id][1] += f * (dy / dist)
 
-            # Power sources, regulators, USB inputs
-            is_power_src = any(term in cid_u or term in c_type_u for term in ["PWR", "POWER", "REG", "BAT", "AMS1117", "LM78", "VREG", "SUPPLY"])
-            is_input = any(term in cid_u or term in c_type_u for term in ["USB", "ANT", "BUTTON", "JACK", "IN"])
+            # Repulsive forces between all components
+            for i in range(len(comps)):
+                for j in range(i + 1, len(comps)):
+                    u, v = comps[i], comps[j]
+                    dx = pos[v.id][0] - pos[u.id][0]
+                    dy = pos[v.id][1] - pos[u.id][1]
+                    dist = math.hypot(dx, dy) or 1.0
+                    if dist < 450.0:
+                        rep = 25000.0 / (dist * dist)
+                        forces[u.id][0] -= rep * (dx / dist)
+                        forces[u.id][1] -= rep * (dy / dist)
+                        forces[v.id][0] += rep * (dx / dist)
+                        forces[v.id][1] += rep * (dy / dist)
 
-            if is_power_src or is_input:
-                col_0.append(comp)
-            else:
-                col_2.append(comp)
+            for c in comps:
+                pos[c.id][0] += forces[c.id][0]
+                pos[c.id][1] += forces[c.id][1]
 
-        # If col_0 is empty and col_2 is large, keep layout balanced
-        if not col_0 and len(col_2) > 4:
-            # Shift some peripherals to left column if they don't share bus
-            col_0.append(col_2.pop())
+        # 4. VPSC separation passes to guarantee clear corridors between blocks
+        for _ in range(60):
+            moved = False
+            for i in range(len(comps)):
+                for j in range(i + 1, len(comps)):
+                    u, v = comps[i], comps[j]
+                    dx = pos[v.id][0] - pos[u.id][0]
+                    dy = pos[v.id][1] - pos[u.id][1]
+                    min_dx = (u.width + v.width) / 2.0 + CORRIDOR_CLEARANCE
+                    min_dy = (u.height + v.height) / 2.0 + CORRIDOR_CLEARANCE
+                    ox = min_dx - abs(dx)
+                    oy = min_dy - abs(dy)
+                    if ox > 0 and oy > 0:
+                        moved = True
+                        if ox < oy:
+                            s = 1.0 if dx >= 0 else -1.0
+                            pos[u.id][0] -= (ox / 2.0) * s
+                            pos[v.id][0] += (ox / 2.0) * s
+                        else:
+                            s = 1.0 if dy >= 0 else -1.0
+                            pos[u.id][1] -= (oy / 2.0) * s
+                            pos[v.id][1] += (oy / 2.0) * s
+            if not moved:
+                break
 
-        return col_0, col_1, col_2
+        # 5. Normalize origin and snap to 20px grid
+        min_px = min(pos[c.id][0] for c in comps)
+        min_py = min(pos[c.id][1] for c in comps)
+        for c in comps:
+            c.x = snap_to_grid(pos[c.id][0] - min_px + MARGIN, GRID_SIZE)
+            c.y = snap_to_grid(pos[c.id][1] - min_py + MARGIN, GRID_SIZE)
+
+        # 6. Re-assign pins with true 2D geometry facing connected peers
+        allocate_pins_and_dimensions(self.schematic, use_geometry=True)
+        self._finalize_bounds()
 
     def _finalize_bounds(self) -> None:
         comps = list(self.schematic.components.values())
         if not comps:
             return
-
         max_x = max(c.x + c.width for c in comps)
         max_y = max(c.y + c.height for c in comps)
-
-        self.schematic.width = max(max_x + CORRIDOR_X, 850.0)
-        self.schematic.height = max(max_y + BOTTOM_CORRIDOR_H, 600.0)
+        self.schematic.width = max(max_x + MARGIN, 850.0)
+        self.schematic.height = max(max_y + MARGIN, 600.0)
 
 
 def place_schematic(schematic: Schematic) -> None:
     placer = SchematicPlacer(schematic)
     placer.place()
+
