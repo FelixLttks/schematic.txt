@@ -98,8 +98,14 @@ class Pin:
     label: str = ""
     side: Side = Side.LEFT
     order: int = 0
+    side_specified: bool = False
+    id: str = ""
     lead_start: Point = field(default_factory=lambda: Point(0.0, 0.0))
     position: Point = field(default_factory=lambda: Point(0.0, 0.0))
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = self.name
 
     @property
     def display_name(self) -> str:
@@ -126,22 +132,63 @@ class Component:
     def center(self) -> Point:
         return Point(self.x + self.width / 2.0, self.y + self.height / 2.0)
 
+    def add_pin(
+        self,
+        name: str,
+        label: str = "",
+        side: Side = Side.LEFT,
+        order: int = 0,
+        side_specified: bool = False,
+        pin_id: Optional[str] = None,
+    ) -> Pin:
+        if not pin_id:
+            existing_same_name = [p for p in self.pins.values() if p.name.upper() == name.upper()]
+            if not existing_same_name and name not in self.pins:
+                pin_id = name
+            else:
+                pin_id = f"{name}#{len(existing_same_name) + 1}"
+
+        pin = Pin(
+            name=name,
+            label=label,
+            side=side,
+            order=order,
+            side_specified=side_specified,
+            id=pin_id,
+        )
+        self.pins[pin_id] = pin
+        return pin
+
     def get_or_create_pin(self, pin_name: str, label: str = "") -> Pin:
-        if pin_name not in self.pins:
-            self.pins[pin_name] = Pin(name=pin_name, label=label)
-        elif label and not self.pins[pin_name].label:
-            self.pins[pin_name].label = label
-        return self.pins[pin_name]
+        matches = self.get_pins_by_name(pin_name)
+        if matches:
+            if label and not matches[0].label:
+                matches[0].label = label
+            return matches[0]
+        return self.add_pin(pin_name, label=label, side_specified=False)
+
+    def get_pins_by_name(self, name: str) -> List[Pin]:
+        name_u = name.upper()
+        # Direct match on name or id e.g. "GND" or "GND#2"
+        return [p for p in self.pins.values() if p.name.upper() == name_u or p.id.upper() == name_u]
+
+    def get_pin(self, name_or_id: str) -> Optional[Pin]:
+        if name_or_id in self.pins:
+            return self.pins[name_or_id]
+        matches = self.get_pins_by_name(name_or_id)
+        return matches[0] if matches else None
 
 
 @dataclass
 class NetConnection:
     component_id: str
     pin_name: str
+    pin_id: Optional[str] = None
+    peer_component_ids: List[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
-        return f"{self.component_id}.{self.pin_name}"
+        return f"{self.component_id}.{self.pin_id or self.pin_name}"
 
 
 @dataclass
@@ -151,10 +198,28 @@ class Net:
     color: Optional[str] = None
     is_bus: bool = False
 
-    def add_connection(self, comp_id: str, pin_name: str) -> None:
-        conn = NetConnection(comp_id, pin_name)
-        if not any(c.component_id == comp_id and c.pin_name == pin_name for c in self.connections):
-            self.connections.append(conn)
+    def add_connection(
+        self,
+        comp_id: str,
+        pin_name: str,
+        pin_id: Optional[str] = None,
+        peer_comp_ids: Optional[List[str]] = None,
+    ) -> None:
+        p_list = list(peer_comp_ids or [])
+        for c in self.connections:
+            if c.component_id == comp_id and c.pin_name == pin_name:
+                if c.peer_component_ids == p_list or not p_list:
+                    if pin_id and not c.pin_id:
+                        c.pin_id = pin_id
+                    return
+
+        conn = NetConnection(
+            component_id=comp_id,
+            pin_name=pin_name,
+            pin_id=pin_id,
+            peer_component_ids=p_list,
+        )
+        self.connections.append(conn)
 
 
 @dataclass

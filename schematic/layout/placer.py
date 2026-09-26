@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from schematic.models import Component, Net, Point, Rect, Schematic, GRID_SIZE, snap_to_grid
 from schematic.layout.pin_allocator import allocate_pins_and_dimensions
 
-CORRIDOR_CLEARANCE = 120.0
+CORRIDOR_CLEARANCE = 180.0
 MARGIN = 100.0
 
 
@@ -124,7 +124,48 @@ class SchematicPlacer:
 
         # 6. Re-assign pins with true 2D geometry facing connected peers
         allocate_pins_and_dimensions(self.schematic, use_geometry=True)
+        # 7. Resolve equivalent pins (e.g. multiple GND/3V3 pins) to nearest candidate
+        self._resolve_equivalent_pins()
         self._finalize_bounds()
+
+    def _resolve_equivalent_pins(self) -> None:
+        """
+        For components with multiple equivalent pins sharing the same base name (e.g. multiple GND pins),
+        resolves each NetConnection to the best and nearest candidate pin based on 2D peer geometry.
+        """
+        for net in self.schematic.nets:
+            for conn in net.connections:
+                comp = self.schematic.components.get(conn.component_id)
+                if not comp:
+                    continue
+                matching = comp.get_pins_by_name(conn.pin_name)
+                if len(matching) <= 1:
+                    if matching:
+                        conn.pin_id = matching[0].id
+                    continue
+
+                # Multiple candidate pins found on comp (e.g. left GND vs right GND)
+                peer_pts: List[Point] = []
+                for pid in conn.peer_component_ids:
+                    p_comp = self.schematic.components.get(pid)
+                    if p_comp and p_comp.id != comp.id:
+                        peer_pts.append(p_comp.center)
+
+                if not peer_pts:
+                    for c in net.connections:
+                        if c.component_id != comp.id:
+                            p_comp = self.schematic.components.get(c.component_id)
+                            if p_comp:
+                                peer_pts.append(p_comp.center)
+
+                if peer_pts:
+                    best_pin = min(
+                        matching,
+                        key=lambda p: min(p.position.manhattan_to(peer_pt) for peer_pt in peer_pts),
+                    )
+                    conn.pin_id = best_pin.id
+                else:
+                    conn.pin_id = matching[0].id
 
     def _finalize_bounds(self) -> None:
         comps = list(self.schematic.components.values())

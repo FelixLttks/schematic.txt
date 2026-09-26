@@ -5,7 +5,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 import yaml
 
-from schematic.models import Component, Net, NetConnection, Pin, Schematic
+from schematic.models import Component, Net, NetConnection, Pin, Schematic, Side
 
 
 class ParseError(Exception):
@@ -102,6 +102,31 @@ class SchematicParser:
             break
         return False
 
+    def _parse_side_pins(self, comp: Component, text: str, side: Side, side_specified: bool = True) -> None:
+        """Parses comma-separated pin tokens and adds them to the component in the specified order and side."""
+        current_order = len([p for p in comp.pins.values() if p.side == side])
+        for p_token in text.split(","):
+            p_token = p_token.strip()
+            if not p_token:
+                continue
+            if "(" in p_token and p_token.endswith(")"):
+                p_name, p_label = p_token[:-1].split("(", 1)
+                comp.add_pin(
+                    name=p_name.strip(),
+                    label=p_label.strip(),
+                    side=side,
+                    order=current_order,
+                    side_specified=side_specified,
+                )
+            else:
+                comp.add_pin(
+                    name=p_token,
+                    side=side,
+                    order=current_order,
+                    side_specified=side_specified,
+                )
+            current_order += 1
+
     def _parse_yaml_dict(self, data: dict) -> None:
         # 1. Parse components
         comps_data = data.get("components", {})
@@ -110,15 +135,25 @@ class SchematicParser:
                 comp = self.schematic.get_or_create_component(str(comp_id))
                 if isinstance(comp_info, dict):
                     comp.type_name = str(comp_info.get("type", comp_info.get("name", "")))
-                    pins = comp_info.get("pins", [])
-                    if isinstance(pins, list):
-                        for p in pins:
-                            p_str = str(p)
-                            if "(" in p_str and p_str.endswith(")"):
-                                name, label = p_str[:-1].split("(", 1)
-                                comp.get_or_create_pin(name.strip(), label.strip())
-                            else:
-                                comp.get_or_create_pin(p_str.strip())
+                    for side_str, side_enum in [("left", Side.LEFT), ("right", Side.RIGHT), ("top", Side.TOP), ("bottom", Side.BOTTOM)]:
+                        raw_pins = comp_info.get(side_str) or comp_info.get(f"{side_str}_pins")
+                        if raw_pins:
+                            if isinstance(raw_pins, list):
+                                raw_pins = ", ".join(str(p) for p in raw_pins)
+                            self._parse_side_pins(comp, str(raw_pins), side_enum, side_specified=True)
+
+                    pins_val = comp_info.get("pins", [])
+                    if isinstance(pins_val, dict):
+                        for side_str, side_enum in [("left", Side.LEFT), ("right", Side.RIGHT), ("top", Side.TOP), ("bottom", Side.BOTTOM)]:
+                            raw_pins = pins_val.get(side_str)
+                            if raw_pins:
+                                if isinstance(raw_pins, list):
+                                    raw_pins = ", ".join(str(p) for p in raw_pins)
+                                self._parse_side_pins(comp, str(raw_pins), side_enum, side_specified=True)
+                    elif isinstance(pins_val, list):
+                        self._parse_side_pins(comp, ", ".join(str(p) for p in pins_val), Side.LEFT, side_specified=False)
+                    elif isinstance(pins_val, str) and pins_val.strip():
+                        self._parse_side_pins(comp, pins_val, Side.LEFT, side_specified=False)
                 elif isinstance(comp_info, str):
                     comp.type_name = comp_info
 
@@ -168,25 +203,43 @@ class SchematicParser:
             if not line or line.startswith("#") or line.startswith("//"):
                 continue
 
-            # Check if this line is a component declaration
+            # Check for explicit pin side declarations:
             # Examples:
-            #   ESP32: ESP32-WROOM-32
-            #   [ESP32: ESP32-WROOM]
-            #   SensorA: BME280
-            #   pins: 3V3, GND, GPIO21(SDA), GPIO22(SCL)
-            if line.startswith("pins:") or line.startswith("pins ="):
+            #   left: 3V3, EN, GPIO36, GND
+            #   right: GND, GPIO23, GPIO22
+            #   top: VIN, VOUT
+            #   bottom: GND
+            #   left_pins: ...
+            #   pins.left: ...
+            side_match = re.match(r"^(?:pins\.)?(left|right|top|bottom)(?:_pins)?\s*[:=]\s*(.*)$", line, re.IGNORECASE)
+            if side_match:
+                if current_comp is None:
+                    raise ParseError(f"'{line}' defined without a preceding component declaration", line_idx, raw_line)
+                side_str = side_match.group(1).lower()
+                pins_content = side_match.group(2).strip()
+                side_enum = {
+                    "left": Side.LEFT,
+                    "right": Side.RIGHT,
+                    "top": Side.TOP,
+                    "bottom": Side.BOTTOM,
+                }[side_str]
+                if pins_content:
+                    self._parse_side_pins(current_comp, pins_content, side_enum, side_specified=True)
+                continue
+
+            # Check if line is empty "pins:" header (to be followed by indented left:, right:, etc.)
+            if re.match(r"^pins\s*[:=]\s*$", line, re.IGNORECASE):
                 if current_comp is None:
                     raise ParseError("'pins:' defined without a preceding component declaration", line_idx, raw_line)
-                pins_text = line.split(":", 1)[-1] if ":" in line else line.split("=", 1)[-1]
-                for p_token in pins_text.split(","):
-                    p_token = p_token.strip()
-                    if not p_token:
-                        continue
-                    if "(" in p_token and p_token.endswith(")"):
-                        p_name, p_label = p_token[:-1].split("(", 1)
-                        current_comp.get_or_create_pin(p_name.strip(), p_label.strip())
-                    else:
-                        current_comp.get_or_create_pin(p_token)
+                continue
+
+            # Generic pins line: pins: 3V3, GND, GPIO21(SDA)
+            pins_match = re.match(r"^pins\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if pins_match:
+                if current_comp is None:
+                    raise ParseError("'pins:' defined without a preceding component declaration", line_idx, raw_line)
+                pins_text = pins_match.group(1).strip()
+                self._parse_side_pins(current_comp, pins_text, Side.LEFT, side_specified=False)
                 continue
 
             # Check for "net <name>: Comp1.Pin1, Comp2.Pin2..."
@@ -297,9 +350,10 @@ class SchematicParser:
             existing_net = Net(name=net_name)
             self.schematic.nets.append(existing_net)
 
-        existing_net.add_connection(src_comp, src_pin)
+        target_comp_ids = [t[0] for t in targets]
+        existing_net.add_connection(src_comp, src_pin, peer_comp_ids=target_comp_ids)
         for t_comp, t_pin, _ in targets:
-            existing_net.add_connection(t_comp, t_pin)
+            existing_net.add_connection(t_comp, t_pin, peer_comp_ids=[src_comp])
 
     def _add_net_by_pin_strings(self, pin_strings: List[str], net_name: str = "", line_num: Optional[int] = None, line_content: Optional[str] = None) -> None:
         if not pin_strings:
@@ -326,7 +380,8 @@ class SchematicParser:
             self.schematic.nets.append(net)
 
         for c_name, p_name in parsed_pins:
-            net.add_connection(c_name, p_name)
+            peers = [other[0] for other in parsed_pins if other[0] != c_name]
+            net.add_connection(c_name, p_name, peer_comp_ids=peers)
 
 
 def parse_schematic(text: str) -> Schematic:

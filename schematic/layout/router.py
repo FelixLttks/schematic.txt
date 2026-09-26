@@ -31,6 +31,7 @@ BEND_PENALTY = 35.0
 STEP_COST = 20.0
 REUSE_COST = 2.0
 NODE_TURN_PENALTY = 15.0
+PIN_ESCAPE_PENALTY = 60.0
 
 
 def _norm_edge(p1: Tuple[float, float], p2: Tuple[float, float]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
@@ -79,6 +80,20 @@ class SchematicRouter:
             for p in c.pins.values():
                 self.blocked_nodes.add((round(p.position.x, 1), round(p.position.y, 1)))
 
+        # Identify pin escape nodes so foreign nets avoid blocking pin fan-out corridors
+        self.pin_escape_info: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
+        for c in comps:
+            for p in c.pins.values():
+                if p.side == Side.LEFT:
+                    esc = (round(p.position.x - GRID_SIZE, 1), round(p.position.y, 1))
+                elif p.side == Side.RIGHT:
+                    esc = (round(p.position.x + GRID_SIZE, 1), round(p.position.y, 1))
+                elif p.side == Side.TOP:
+                    esc = (round(p.position.x, 1), round(p.position.y - GRID_SIZE, 1))
+                else:
+                    esc = (round(p.position.x, 1), round(p.position.y + GRID_SIZE, 1))
+                self.pin_escape_info.setdefault(esc, set()).add((c.id, p.name))
+
         # 3. Sort nets: Multi-terminal nets first so shared trunks establish efficiently
         sorted_nets = sorted(self.schematic.nets, key=lambda n: -len(n.connections))
 
@@ -94,13 +109,27 @@ class SchematicRouter:
             for p in pins:
                 self.blocked_nodes.discard(p)
 
-            # Multi-terminal Steiner tree construction (Takahashi-Matsuyama)
-            tree_nodes: Set[Tuple[float, float]] = {pins[0]}
+            # Group pins by component to identify internally connected pins (e.g. left and right GND on same chip)
+            comp_to_pins: Dict[str, List[Tuple[float, float]]] = {}
+            for pos in pins:
+                for c in comps:
+                    if any((round(p.position.x, 1), round(p.position.y, 1)) == pos for p in c.pins.values()):
+                        comp_to_pins.setdefault(c.id, []).append(pos)
+                        break
+
+            primary_cid = max(comp_to_pins.keys(), key=lambda cid: len(comp_to_pins[cid])) if comp_to_pins else None
+            if primary_cid and len(comp_to_pins[primary_cid]) > 1:
+                tree_nodes: Set[Tuple[float, float]] = set(comp_to_pins[primary_cid])
+            else:
+                tree_nodes = {pins[0]}
+
             tree_terminal_set = set(pins)
             net_edges: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
 
-            for pin in pins[1:]:
-                path = self._a_star(pin, tree_nodes, net.name, min_x, max_x, min_y, max_y)
+            for pin in pins:
+                if pin in tree_nodes:
+                    continue
+                path = self._a_star(pin, tree_nodes, net, min_x, max_x, min_y, max_y)
                 if not path:
                     continue
 
@@ -141,16 +170,20 @@ class SchematicRouter:
         positions: List[Tuple[float, float]] = []
         for conn in net.connections:
             comp = self.schematic.components.get(conn.component_id)
-            if comp and conn.pin_name in comp.pins:
-                p = comp.pins[conn.pin_name]
-                positions.append((round(p.position.x, 1), round(p.position.y, 1)))
+            if not comp:
+                continue
+            pin = comp.pins.get(conn.pin_id) if conn.pin_id else comp.get_pin(conn.pin_name)
+            if pin:
+                pos = (round(pin.position.x, 1), round(pin.position.y, 1))
+                if pos not in positions:
+                    positions.append(pos)
         return positions
 
     def _a_star(
         self,
         start_node: Tuple[float, float],
         targets: Set[Tuple[float, float]],
-        net_name: str,
+        net: Net,
         min_x: float,
         max_x: float,
         min_y: float,
@@ -158,6 +191,9 @@ class SchematicRouter:
     ) -> Optional[List[Tuple[float, float]]]:
         if start_node in targets:
             return [start_node]
+
+        net_name = net.name
+        net_pins = {(c.component_id, c.pin_name) for c in net.connections}
 
         def h(x: float, y: float) -> float:
             return min(abs(x - tx) + abs(y - ty) for tx, ty in targets)
@@ -208,6 +244,11 @@ class SchematicRouter:
                 v_occs = self.node_occupants.get(v)
                 if v_occs and net_name not in v_occs and is_bend:
                     step_cost += NODE_TURN_PENALTY
+
+                # Escape corridor protection: foreign nets avoid blocking unowned pin fanout nodes
+                foreign_pins = self.pin_escape_info.get(v)
+                if foreign_pins and not any(p in net_pins for p in foreign_pins):
+                    step_cost += PIN_ESCAPE_PENALTY
 
                 new_g = g + step_cost
                 n_state = (v, ndx, ndy)

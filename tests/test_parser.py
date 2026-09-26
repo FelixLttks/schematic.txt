@@ -75,5 +75,44 @@ class TestParser(unittest.TestCase):
         self.assertIn("Line 2", str(ctx.exception))
 
 
+    def test_side_pin_declarations(self):
+        code = """
+        ESP32: ESP32-WROOM-32
+          left: 3V3, EN, GPIO36, GND
+          right: GND, GPIO23, GPIO22, 5V
+        """
+        sch = parse_schematic(code)
+        esp = sch.components["ESP32"]
+        self.assertEqual(len(esp.pins), 8)
+
+        # Check left pins and order
+        left_pins = [p for p in esp.pins.values() if p.side.name == "LEFT"]
+        self.assertEqual([p.name for p in left_pins], ["3V3", "EN", "GPIO36", "GND"])
+        self.assertEqual([p.order for p in left_pins], [0, 1, 2, 3])
+
+        # Check right pins and order
+        right_pins = [p for p in esp.pins.values() if p.side.name == "RIGHT"]
+        self.assertEqual([p.name for p in right_pins], ["GND", "GPIO23", "GPIO22", "5V"])
+        self.assertEqual([p.order for p in right_pins], [0, 1, 2, 3])
+
+        # Check that both GND pins exist and have unique IDs
+        gnd_pins = esp.get_pins_by_name("GND")
+        self.assertEqual(len(gnd_pins), 2)
+        self.assertNotEqual(gnd_pins[0].id, gnd_pins[1].id)
+
+    def test_yaml_side_pins(self):
+        yaml_code = """
+        components:
+          ESP32:
+            type: ESP32-WROOM
+            left: [3V3, EN, GND]
+            right: [GND, GPIO23, 5V]
+        """
+        sch = parse_schematic(yaml_code)
+        esp = sch.components["ESP32"]
+        self.assertEqual(len(esp.pins), 6)
+        self.assertEqual(len(esp.get_pins_by_name("GND")), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

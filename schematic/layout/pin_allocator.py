@@ -35,10 +35,13 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
         top_pins: List[Pin] = []
         bottom_pins: List[Pin] = []
 
-        for pin_name, pin in comp.pins.items():
-            peers = pin_peer_map.get((comp_id, pin_name), [])
-            side = _choose_pin_side(comp, pin, peers, schematic.components, use_geometry)
-            pin.side = side
+        for pin in comp.pins.values():
+            if pin.side_specified:
+                side = pin.side
+            else:
+                peers = pin_peer_map.get((comp_id, pin.name), [])
+                side = _choose_pin_side(comp, pin, peers, schematic.components, use_geometry)
+                pin.side = side
             if side == Side.LEFT:
                 left_pins.append(pin)
             elif side == Side.RIGHT:
@@ -48,7 +51,7 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
             else:
                 bottom_pins.append(pin)
 
-        # Sort pins along each side
+        # Sort pins along each side (preserves user-specified order when given)
         _sort_side_pins(left_pins)
         _sort_side_pins(right_pins)
         _sort_side_pins(top_pins)
@@ -113,19 +116,21 @@ def _choose_pin_side(
 
 
 def _sort_side_pins(pins: List[Pin]) -> None:
-    """Sorts pins cleanly along a side."""
-    def sort_key(pin: Pin) -> int:
+    """Sorts pins cleanly along a side. Preserves user-specified order when given."""
+    def sort_key(pin: Pin) -> Tuple[int, int]:
+        if pin.side_specified:
+            return (0, pin.order)
         p_name = pin.name.upper()
         p_label = pin.label.upper()
         if any(w in p_name or w in p_label for w in ["VCC", "3V3", "5V", "VIN", "VDD"]):
-            return 0
+            return (1, 0)
         if "GND" in p_name or "GND" in p_label or "VSS" in p_name:
-            return 100
+            return (1, 100)
         if any(w in p_name or w in p_label for w in ["SCL", "SCK", "CLK"]):
-            return 20
+            return (1, 20)
         if any(w in p_name or w in p_label for w in ["SDA", "MOSI", "MISO", "TX", "RX"]):
-            return 30
-        return 50
+            return (1, 30)
+        return (1, 50)
 
     pins.sort(key=sort_key)
 

@@ -174,7 +174,7 @@ class TestLayoutAndRouting(unittest.TestCase):
                 for conn in net.connections:
                     comp = sch.components.get(conn.component_id)
                     self.assertIsNotNone(comp, f"Component {conn.component_id} not found in {ex_path}")
-                    pin = comp.pins.get(conn.pin_name)
+                    pin = comp.pins.get(conn.pin_id) if conn.pin_id else comp.get_pin(conn.pin_name)
                     self.assertIsNotNone(pin, f"Pin {conn.pin_name} not found on {conn.component_id} in {ex_path}")
                     pos = pin.position
                     # Must have at least one wire segment touching this pin terminal
@@ -187,6 +187,38 @@ class TestLayoutAndRouting(unittest.TestCase):
                         has_touching_wire,
                         f"Pin {conn.component_id}.{conn.pin_name} (net {net.name}) at {pos} has no touching wire in {ex_path}!",
                     )
+
+    def test_equivalent_gnd_nearest_selection(self):
+        text = """
+        ESP32: ESP32-WROOM-32
+          left: 3V3, EN, GPIO36, GND
+          right: GND, GPIO23, GPIO22, 5V
+
+        SensorLeft: BME280
+          pins: VIN, GND, SDA, SCL
+
+        SensorRight: MicroSD
+          pins: 3V3, GND, MOSI, MISO
+
+        ESP32.GND -> SensorLeft.GND
+        ESP32.GND -> SensorRight.GND
+        ESP32.GPIO36 -> SensorLeft.SDA
+        ESP32.GPIO23 -> SensorRight.MOSI
+        """
+        sch = process_schematic(text)
+        esp = sch.components["ESP32"]
+        self.assertEqual(len(esp.pins), 8)
+        gnd_pins = esp.get_pins_by_name("GND")
+        self.assertEqual(len(gnd_pins), 2)
+
+        # Both left and right GND pins on ESP32 should touch wires from their respective nearest sensors
+        for gnd in gnd_pins:
+            touches = any(
+                (w.start.distance_to(gnd.position) < 0.5 or w.end.distance_to(gnd.position) < 0.5)
+                and w.net_name == "GND"
+                for w in sch.wires
+            )
+            self.assertTrue(touches, f"ESP32 GND pin on {gnd.side} was not connected to wire!")
 
 
 if __name__ == "__main__":
