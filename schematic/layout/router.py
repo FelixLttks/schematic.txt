@@ -27,10 +27,10 @@ from schematic.models import (
     snap_to_grid,
 )
 
-BEND_PENALTY = 35.0
+BEND_PENALTY = 80.0
 STEP_COST = 20.0
 REUSE_COST = 2.0
-NODE_TURN_PENALTY = 15.0
+CROSSING_PENALTY = 50.0
 PIN_ESCAPE_PENALTY = 60.0
 
 
@@ -94,8 +94,13 @@ class SchematicRouter:
                     esc = (round(p.position.x, 1), round(p.position.y + GRID_SIZE, 1))
                 self.pin_escape_info.setdefault(esc, set()).add((c.id, p.name))
 
-        # 3. Sort nets: Multi-terminal nets first so shared trunks establish efficiently
-        sorted_nets = sorted(self.schematic.nets, key=lambda n: -len(n.connections))
+        # 3. Sort nets: Signal nets first for direct routing, then power rails
+        def net_sort_key(net: Net) -> Tuple[int, int, str]:
+            nu = net.name.upper()
+            is_pwr = any(p in nu for p in ["GND", "VSS", "3V3", "5V", "VCC", "VIN", "VDD"])
+            return (1 if is_pwr else 0, -len(net.connections), net.name)
+
+        sorted_nets = sorted(self.schematic.nets, key=net_sort_key)
 
         for net in sorted_nets:
             color = self._assign_net_color(net.name)
@@ -234,16 +239,22 @@ class SchematicRouter:
                     continue  # Blocked by another net: zero collinear overlap!
 
                 is_bend = (dx != 0.0 or dy != 0.0) and (ndx != dx or ndy != dy)
+
+                # Strict rule: A foreign net may NEVER bend at a node visited by another net!
+                u_occs = self.node_occupants.get(u)
+                if is_bend and u_occs and net_name not in u_occs:
+                    continue
+
                 step_cost = STEP_COST + (BEND_PENALTY if is_bend else 0.0)
 
                 # Reusing existing segments of the same net has very low cost (Steiner branch)
                 if occ == net_name:
                     step_cost = REUSE_COST
 
-                # Congestion: penalize turning at a node visited by another net
+                # Crossing penalty: crossing a foreign net's straight wire orthogonally
                 v_occs = self.node_occupants.get(v)
-                if v_occs and net_name not in v_occs and is_bend:
-                    step_cost += NODE_TURN_PENALTY
+                if v_occs and net_name not in v_occs:
+                    step_cost += CROSSING_PENALTY
 
                 # Escape corridor protection: foreign nets avoid blocking unowned pin fanout nodes
                 foreign_pins = self.pin_escape_info.get(v)

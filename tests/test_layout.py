@@ -220,6 +220,49 @@ class TestLayoutAndRouting(unittest.TestCase):
             )
             self.assertTrue(touches, f"ESP32 GND pin on {gnd.side} was not connected to wire!")
 
+    def test_no_dual_bends_at_same_node_and_clean_crossings(self):
+        """Verifies that 2 different nets NEVER bend at the same node, and crossings are purely orthogonal."""
+        import glob
+        for f in glob.glob("examples/*.txt"):
+            with open(f) as fp:
+                text = fp.read()
+            sch = process_schematic(text)
+
+            net_wires = {}
+            for w in sch.wires:
+                net_wires.setdefault(w.net_name, []).append(w)
+
+            net_bends = {}
+            node_nets = {}
+            for net_name, wires in net_wires.items():
+                adj = {}
+                for w in wires:
+                    p1 = (round(w.start.x, 1), round(w.start.y, 1))
+                    p2 = (round(w.end.x, 1), round(w.end.y, 1))
+                    adj.setdefault(p1, set()).add(p2)
+                    adj.setdefault(p2, set()).add(p1)
+                    node_nets.setdefault(p1, set()).add(net_name)
+                    node_nets.setdefault(p2, set()).add(net_name)
+
+                for node, nbrs in adj.items():
+                    if len(nbrs) == 2:
+                        n1, n2 = list(nbrs)
+                        d1 = (round(n1[0] - node[0], 1), round(n1[1] - node[1], 1))
+                        d2 = (round(n2[0] - node[0], 1), round(n2[1] - node[1], 1))
+                        if (d1[0] + d2[0] != 0) or (d1[1] + d2[1] != 0):
+                            net_bends.setdefault(node, set()).add(net_name)
+                    elif len(nbrs) > 2:
+                        net_bends.setdefault(node, set()).add(net_name)
+
+            # 1. No node may have bends or junctions from more than 1 net
+            dual_bends = {node: nets for node, nets in net_bends.items() if len(nets) > 1}
+            self.assertEqual(len(dual_bends), 0, f"Found dual bends at same node in {f}: {dual_bends}")
+
+            # 2. At any crossing node (visited by > 1 net), neither net may bend at that node
+            crossing_nodes = {node: nets for node, nets in node_nets.items() if len(nets) > 1}
+            for node, nets in crossing_nodes.items():
+                self.assertNotIn(node, net_bends, f"A net bends at crossing node {node} in {f}!")
+
 
 if __name__ == "__main__":
     unittest.main()
