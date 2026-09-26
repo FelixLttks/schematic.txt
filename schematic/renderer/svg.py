@@ -54,7 +54,12 @@ class SvgRenderer:
         vb_h = max(max_y - min_y, 450.0)
 
         svg = []
-        svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x:.1f} {min_y:.1f} {vb_w:.1f} {vb_h:.1f}" class="schematic-canvas">')
+        svg.append(
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'viewBox="{min_x:.1f} {min_y:.1f} {vb_w:.1f} {vb_h:.1f}" '
+            f'class="schematic-canvas" '
+            f'shape-rendering="geometricPrecision" text-rendering="geometricPrecision">'
+        )
         svg.append('<defs>')
         # Dot grid pattern strictly aligned to coordinate (0, 0)
         svg.append(f'<pattern id="schematic-grid" width="20" height="20" patternUnits="userSpaceOnUse">')
@@ -67,8 +72,9 @@ class SvgRenderer:
         svg.append('</defs>')
 
         # Background grid
-        svg.append(f'<rect x="{min_x:.1f}" y="{min_y:.1f}" width="{vb_w:.1f}" height="{vb_h:.1f}" fill="{bg_color}" />')
-        svg.append(f'<rect x="{min_x:.1f}" y="{min_y:.1f}" width="{vb_w:.1f}" height="{vb_h:.1f}" fill="url(#schematic-grid)" />')
+        bg_pad = 50000.0
+        svg.append(f'<rect x="{min_x - bg_pad:.1f}" y="{min_y - bg_pad:.1f}" width="{vb_w + 2 * bg_pad:.1f}" height="{vb_h + 2 * bg_pad:.1f}" fill="{bg_color}" />')
+        svg.append(f'<rect x="{min_x - bg_pad:.1f}" y="{min_y - bg_pad:.1f}" width="{vb_w + 2 * bg_pad:.1f}" height="{vb_h + 2 * bg_pad:.1f}" fill="url(#schematic-grid)" />')
 
         # Layer 1: Wires
         svg.append('<g id="schematic-wires" stroke-linecap="round" stroke-linejoin="round">')
@@ -200,18 +206,44 @@ class SvgRenderer:
 
     def _get_net_color(self, net_name: str) -> str:
         name_u = net_name.upper()
-        if "GND" in name_u or "VSS" in name_u:
-            return "#4a5568"
-        if any(term in name_u for term in ["3V3", "5V", "VCC", "VIN", "VDD"]):
-            return "#ef4444"
+
+        if any(k in name_u for k in ["GND", "VSS", "NEG", "BATT-"]):
+            return "#64748b" if self.dark_theme else "#475569"
+
+        if any(k in name_u for k in ["BATT_POS", "BATT_VCC", "DCDC_IN", "36V", "48V", "BAT_IN", "LOAD_OUT", "RAW", "HV"]):
+            return "#f97316" if self.dark_theme else "#ea580c"
+
+        if any(k in name_u for k in ["3V3", "5V", "VCC", "VIN", "VDD", "VOUT", "PWR_IN", "PWR_OUT", "DISP_VCC"]):
+            return "#ef4444" if self.dark_theme else "#dc2626"
+
+        if any(k in name_u for k in ["SHUNT", "SENSE", "ANALOG", "ADC"]):
+            return "#ec4899" if self.dark_theme else "#db2777"
+
+        if any(k in name_u for k in ["SPEED", "INT", "IRQ", "PWM", "PULSE"]):
+            return "#06b6d4" if self.dark_theme else "#0891b2"
+
         if "SDA" in name_u:
-            return "#3b82f6"
-        if "SCL" in name_u or "SCK" in name_u or "CLK" in name_u:
-            return "#14b8a6"
-        if any(term in name_u for term in ["MOSI", "MISO", "CS", "SPI"]):
-            return "#a855f7"
-        if any(term in name_u for term in ["TX", "RX"]):
-            return "#f59e0b"
+            return "#38bdf8" if self.dark_theme else "#0284c7"
+        if "SCL" in name_u:
+            return "#10b981" if self.dark_theme else "#059669"
+
+        if "MOSI" in name_u:
+            return "#818cf8" if self.dark_theme else "#4f46e5"
+        if "MISO" in name_u:
+            return "#c084fc" if self.dark_theme else "#9333ea"
+        if "SCK" in name_u or "CLK" in name_u:
+            return "#10b981" if self.dark_theme else "#059669"
+        if "CS" in name_u or "SS" in name_u:
+            return "#fbbf24" if self.dark_theme else "#d97706"
+
+        if "TX" in name_u:
+            return "#f59e0b" if self.dark_theme else "#d97706"
+        if "RX" in name_u:
+            return "#2dd4bf" if self.dark_theme else "#0d9488"
+
+        if any(k in name_u for k in ["KEY", "EN", "RST", "RESET", "CTRL"]):
+            return "#a78bfa" if self.dark_theme else "#7c3aed"
+
         return "#38bdf8" if self.dark_theme else "#0284c7"
 
 

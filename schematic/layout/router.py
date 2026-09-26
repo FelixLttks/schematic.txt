@@ -313,19 +313,55 @@ class SchematicRouter:
 
     def _assign_net_color(self, net_name: str) -> str:
         nu = net_name.upper()
-        if "GND" in nu or "VSS" in nu:
-            return "#4a5568"
-        if any(term in nu for term in ["3V3", "5V", "VCC", "VIN", "VDD"]):
-            return "#c53030"
+
+        # 1. Ground & Return
+        if any(k in nu for k in ["GND", "VSS", "NEG", "BATT-"]):
+            return "#64748b"
+
+        # 2. High Voltage & Raw Battery Power (Vivid Orange)
+        if any(k in nu for k in ["BATT_POS", "BATT_VCC", "DCDC_IN", "36V", "48V", "BAT_IN", "LOAD_OUT", "RAW", "HV"]):
+            return "#f97316"
+
+        # 3. Logic Power Rails (Crisp Red)
+        if any(k in nu for k in ["3V3", "5V", "VCC", "VIN", "VDD", "VOUT", "PWR_IN", "PWR_OUT", "DISP_VCC"]):
+            return "#ef4444"
+
+        # 4. Precision Analog & Shunt Sensing (Rose / Magenta)
+        if any(k in nu for k in ["SHUNT", "SENSE", "ANALOG", "ADC"]):
+            return "#ec4899"
+
+        # 5. Speed, Pulses, Interrupts & Timing (Cyan)
+        if any(k in nu for k in ["SPEED", "INT", "IRQ", "PWM", "PULSE"]):
+            return "#06b6d4"
+
+        # 6. I2C Bus
         if "SDA" in nu:
-            return "#2b6cb0"
-        if "SCL" in nu or "SCK" in nu or "CLK" in nu:
-            return "#2c7a7b"
-        if any(term in nu for term in ["MOSI", "MISO", "CS", "SPI"]):
-            return "#6b46c1"
-        if any(term in nu for term in ["TX", "RX"]):
-            return "#b7791f"
-        return "#1a365d"
+            return "#38bdf8"
+        if "SCL" in nu:
+            return "#10b981"
+
+        # 7. SPI Bus (Individual distinct hues per signal)
+        if "MOSI" in nu:
+            return "#818cf8"
+        if "MISO" in nu:
+            return "#c084fc"
+        if "SCK" in nu or "CLK" in nu:
+            return "#10b981"
+        if "CS" in nu or "SS" in nu:
+            return "#fbbf24"
+
+        # 8. UART / Serial (Distinct TX and RX)
+        if "TX" in nu:
+            return "#f59e0b"
+        if "RX" in nu:
+            return "#2dd4bf"
+
+        # 9. Control / Key / Enable (Violet)
+        if any(k in nu for k in ["KEY", "EN", "RST", "RESET", "CTRL"]):
+            return "#a78bfa"
+
+        # 10. Default General Signal (High-contrast Sky Blue)
+        return "#38bdf8"
 
 
 def route_schematic(schematic: Schematic) -> None:

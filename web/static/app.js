@@ -22,13 +22,14 @@
   let compileTimeout = null;
   let currentSvgRaw = "";
 
-  // Pan & Zoom state
-  let scale = 1.0;
-  let panX = 0;
-  let panY = 0;
+  // Pan & Zoom state (Native SVG ViewBox)
+  let baseVb = null;
+  let currentVb = null;
   let isPanning = false;
-  let startX = 0;
-  let startY = 0;
+  let startClientX = 0;
+  let startClientY = 0;
+  let startVbX = 0;
+  let startVbY = 0;
 
   // 1. Line numbers synchronization
   function updateLineNumbers() {
@@ -71,7 +72,24 @@
         svgViewport.innerHTML = data.svg;
         errorBox.classList.add("hidden");
         setStatus("ok", "Compiled successfully");
-        applyTransform();
+
+        const svg = svgViewport.querySelector("svg");
+        if (svg) {
+          const parsed = parseViewBox(svg);
+          if (parsed) {
+            const wasDefault = !currentVb || !baseVb || (
+              Math.abs(currentVb.x - baseVb.x) < 0.5 &&
+              Math.abs(currentVb.y - baseVb.y) < 0.5 &&
+              Math.abs(currentVb.w - baseVb.w) < 0.5 &&
+              Math.abs(currentVb.h - baseVb.h) < 0.5
+            );
+            baseVb = { ...parsed };
+            if (wasDefault) {
+              currentVb = { ...parsed };
+            }
+            applyViewBox();
+          }
+        }
       } else {
         const err = data.error || {};
         showError(err);
@@ -143,51 +161,122 @@
     compileSchematic();
   });
 
-  // 3. Pan & Zoom Engine
-  function applyTransform() {
-    svgViewport.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  // 3. Pan & Zoom Engine (Native SVG ViewBox)
+  function parseViewBox(svg) {
+    if (!svg) return null;
+    const vbAttr = svg.getAttribute("viewBox");
+    if (!vbAttr) return null;
+    const parts = vbAttr.trim().split(/[\s,]+/).map(Number);
+    if (parts.length === 4 && !parts.some(isNaN)) {
+      return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
+    }
+    return null;
+  }
+
+  function applyViewBox() {
+    const svg = svgViewport.querySelector("svg");
+    if (!svg || !currentVb) return;
+    svg.setAttribute("viewBox", `${currentVb.x.toFixed(2)} ${currentVb.y.toFixed(2)} ${currentVb.w.toFixed(2)} ${currentVb.h.toFixed(2)}`);
+
+    const canvasInfo = document.getElementById("canvas-info");
+    if (canvasInfo && baseVb) {
+      const zoomPct = Math.round((baseVb.w / currentVb.w) * 100);
+      canvasInfo.textContent = `Scroll to zoom · Drag to pan · Zoom: ${zoomPct}%`;
+    }
   }
 
   function resetZoom() {
-    scale = 1.0;
-    panX = 0;
-    panY = 0;
-    applyTransform();
+    const svg = svgViewport.querySelector("svg");
+    if (!svg) return;
+    const vb = parseViewBox(svg);
+    if (!vb) return;
+    baseVb = { ...vb };
+    currentVb = { ...vb };
+    applyViewBox();
+  }
+
+  function getSvgPoint(e, svg) {
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    return pt.matrixTransform(ctm.inverse());
   }
 
   btnResetZoom.addEventListener("click", resetZoom);
 
   canvasWrapper.addEventListener("wheel", (e) => {
     e.preventDefault();
-    const rect = canvasWrapper.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const svg = svgViewport.querySelector("svg");
+    if (!svg || !currentVb || !baseVb) return;
 
-    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
-    const newScale = Math.min(Math.max(scale * zoomFactor, 0.2), 5.0);
+    const svgPt = getSvgPoint(e, svg);
+    if (!svgPt) return;
 
-    panX = mouseX - (mouseX - panX) * (newScale / scale);
-    panY = mouseY - (mouseY - panY) * (newScale / scale);
-    scale = newScale;
-    applyTransform();
+    // Zoom factor: wheel up (< 0) -> zoom in; wheel down (> 0) -> zoom out
+    const zoomFactor = e.deltaY < 0 ? 1.15 : (1 / 1.15);
+
+    const currentZoom = baseVb.w / currentVb.w;
+    const targetZoom = currentZoom * (e.deltaY < 0 ? 1.15 : 0.8695);
+    if (targetZoom < 0.1 || targetZoom > 35.0) return;
+
+    const newW = currentVb.w / zoomFactor;
+    const newH = currentVb.h / zoomFactor;
+
+    const fx = (svgPt.x - currentVb.x) / currentVb.w;
+    const fy = (svgPt.y - currentVb.y) / currentVb.h;
+
+    currentVb.x = svgPt.x - fx * newW;
+    currentVb.y = svgPt.y - fy * newH;
+    currentVb.w = newW;
+    currentVb.h = newH;
+
+    applyViewBox();
   }, { passive: false });
 
   canvasWrapper.addEventListener("mousedown", (e) => {
     if (e.target.closest(".error-box")) return;
+    if (e.button !== 0 && e.button !== 1) return;
+    const svg = svgViewport.querySelector("svg");
+    if (!svg || !currentVb) return;
+
     isPanning = true;
-    startX = e.clientX - panX;
-    startY = e.clientY - panY;
+    canvasWrapper.classList.add("is-panning");
+    startClientX = e.clientX;
+    startClientY = e.clientY;
+    startVbX = currentVb.x;
+    startVbY = currentVb.y;
   });
 
   window.addEventListener("mousemove", (e) => {
     if (!isPanning) return;
-    panX = e.clientX - startX;
-    panY = e.clientY - startY;
-    applyTransform();
+    const svg = svgViewport.querySelector("svg");
+    if (!svg || !currentVb) return;
+
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+
+    const dxScreen = e.clientX - startClientX;
+    const dyScreen = e.clientY - startClientY;
+
+    // Convert pixel delta to SVG units
+    currentVb.x = startVbX - (dxScreen / ctm.a);
+    currentVb.y = startVbY - (dyScreen / ctm.d);
+
+    applyViewBox();
   });
 
   window.addEventListener("mouseup", () => {
-    isPanning = false;
+    if (isPanning) {
+      isPanning = false;
+      canvasWrapper.classList.remove("is-panning");
+    }
+  });
+
+  canvasWrapper.addEventListener("dblclick", (e) => {
+    if (e.target.closest(".error-box")) return;
+    resetZoom();
   });
 
   // 4. Download SVG
@@ -267,7 +356,8 @@
         if (examples[selected]) {
           codeInput.value = examples[selected];
           updateLineNumbers();
-          resetZoom();
+          baseVb = null;
+          currentVb = null;
           compileSchematic();
         }
       });
