@@ -100,13 +100,41 @@ class SchematicRouter:
                         self.pin_escape_nodes.setdefault(node, set()).add((c.id, p.name))
                     self.pin_corridor_info.setdefault(node, set()).add((c.id, p.name))
 
-        # 3. Sort nets: Point-to-point nets first for direct routing, then multi-drop buses and ground rails
-        def net_sort_key(net: Net) -> Tuple[int, int, str]:
+        # 3. Detect topological buses (nets sharing identical non-power terminal components)
+        pwr_names = {"GND", "VSS", "NEG"}
+        net_terminals: Dict[str, Tuple[str, ...]] = {}
+        for net in self.schematic.nets:
+            if any(p in net.name.upper() for p in pwr_names):
+                continue
+            if any(k in net.name.upper() for k in ["3V3", "5V", "VCC", "VIN", "VDD"]) and len(net.connections) >= 3:
+                continue
+            cids = tuple(sorted({conn.component_id for conn in net.connections}))
+            if len(cids) >= 2:
+                net_terminals[net.name] = cids
+
+        groups: Dict[Tuple[str, ...], List[str]] = {}
+        for n_name, cids in net_terminals.items():
+            groups.setdefault(cids, []).append(n_name)
+
+        self.net_bus: Dict[str, str] = {}
+        self.bus_members: Dict[str, List[str]] = {}
+        for cids, n_names in groups.items():
+            if len(n_names) >= 2:
+                bus_id = ":".join(cids)
+                self.bus_members[bus_id] = n_names
+                for n in n_names:
+                    self.net_bus[n] = bus_id
+
+        self.bus_guide_edges: Dict[str, Set[Tuple[Tuple[float, float], Tuple[float, float]]]] = {}
+
+        # 4. Sort nets: Bus-grouped point-to-point nets first for parallel alignment, then multi-drop buses and ground rails
+        def net_sort_key(net: Net) -> Tuple[int, str, int, str]:
             nu = net.name.upper()
             is_return = any(p in nu for p in ["GND", "VSS", "NEG"])
             is_multi = len(net.connections) >= 3
+            bus_id = self.net_bus.get(net.name, "")
             prio = 2 if is_return else (1 if is_multi else 0)
-            return (prio, -len(net.connections), net.name)
+            return (prio, bus_id, -len(net.connections), net.name)
 
         sorted_nets = sorted(self.schematic.nets, key=net_sort_key)
 
@@ -201,6 +229,8 @@ class SchematicRouter:
 
         net_name = net.name
         net_pins = {(c.component_id, c.pin_name) for c in net.connections}
+        bus_id = getattr(self, "net_bus", {}).get(net.name)
+        guide_edges = getattr(self, "bus_guide_edges", {}).get(bus_id, set())
 
         def h(x: float, y: float) -> float:
             return min(abs(x - tx) + abs(y - ty) for tx, ty in targets)
@@ -259,14 +289,35 @@ class SchematicRouter:
                     step_cost = REUSE_COST
 
                 # Crossing penalty: crossing a foreign net's straight wire orthogonally
+                # If crossing a member of the same bus, apply high penalty to avoid twists/entanglement
                 v_occs = self.node_occupants.get(v)
                 if v_occs and net_name not in v_occs:
-                    step_cost += CROSSING_PENALTY
+                    if bus_id and any(getattr(self, "net_bus", {}).get(o) == bus_id for o in v_occs):
+                        step_cost += 200.0
+                    else:
+                        step_cost += CROSSING_PENALTY
 
                 # Breakout corridor protection: foreign nets avoid blocking unowned pin fanout nodes
                 foreign_corridor_v = self.pin_corridor_info.get(v)
                 if foreign_corridor_v and not any(p in net_pins for p in foreign_corridor_v):
                     step_cost += PIN_ESCAPE_PENALTY
+
+                # Bus bundling affinity discount:
+                # If edge e runs parallel adjacent (distance GRID_SIZE) to an edge in guide_edges, discount step cost
+                if guide_edges:
+                    is_parallel = False
+                    if ndx != 0:
+                        p1 = _norm_edge((u[0], u[1] - GRID_SIZE), (v[0], v[1] - GRID_SIZE))
+                        p2 = _norm_edge((u[0], u[1] + GRID_SIZE), (v[0], v[1] + GRID_SIZE))
+                        if p1 in guide_edges or p2 in guide_edges:
+                            is_parallel = True
+                    elif ndy != 0:
+                        p1 = _norm_edge((u[0] - GRID_SIZE, u[1]), (v[0] - GRID_SIZE, v[1]))
+                        p2 = _norm_edge((u[0] + GRID_SIZE, u[1]), (v[0] + GRID_SIZE, v[1]))
+                        if p1 in guide_edges or p2 in guide_edges:
+                            is_parallel = True
+                    if is_parallel:
+                        step_cost = max(1.0, step_cost - 15.0)
 
                 new_g = g + step_cost
                 n_state = (v, ndx, ndy)
@@ -292,6 +343,13 @@ class SchematicRouter:
             curr = came_from.get(curr)
 
         path.reverse()
+
+        # If bus member, record guide edges for subsequent parallel members
+        if bus_id and path:
+            b_edges = self.bus_guide_edges.setdefault(bus_id, set())
+            for i in range(len(path) - 1):
+                b_edges.add(_norm_edge(path[i], path[i + 1]))
+
         return path
 
     def _merge_path(

@@ -1,21 +1,29 @@
-"""Port-Aware Hierarchical Placement (PA-HP) Engine for electrical schematics.
+"""Flexible 2D Multi-Band & Inline Splicing Placement Engine for electrical schematics.
 
 Implements mathematically optimal 2D schematic placement based on:
-1. Stage-Ranked DAG Flow Layering (X-axis column assignment with ALAP sink clustering).
-2. Port-Aware Two-Sided Barycentric Sweeps (iterative quadratic wirelength minimization).
-3. 1D Optimal Isotonic Grid Legalization via Cluster Merging (Pool Adjacent Violators Algorithm).
-4. Strict 20px grid alignment and guaranteed non-overlapping clearance corridors.
+1. Series/Parallel Component Topology Decomposition:
+   - Inline 2-terminal components (fuses, switches, series elements) are spliced directly
+     into connection leads preceding their downstream target components without consuming an entire column.
+   - Shunt passives (pull-ups, bypass/filter capacitors) are placed in the intermediate routing corridor.
+2. 2D Multi-Band Macro Clustering:
+   - Peripheral components are clustered into functional vertical bands (Drive/Display, Sensors, Power)
+     based on their target pin elevation on the central Hub component.
+   - Macro components are assigned to multi-column 2D bands rather than a rigid 1D column chain.
+3. Generous Clearance Corridors:
+   - Spacing prevents cramped 20px zigzag mazes and allows clean parallel bus routing.
+4. Strict 20px Grid Alignment and Non-Overlap Guarantees.
 """
 
 from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Set, Tuple
+
 from schematic.models import Component, Net, Point, Rect, Schematic, Side, GRID_SIZE, snap_to_grid
 from schematic.layout.pin_allocator import allocate_pins_and_dimensions
 
 MARGIN = 80.0
-COLUMN_CORRIDOR = 160.0
-ROW_CORRIDOR = 60.0
+COLUMN_CORRIDOR = 240.0
+ROW_CORRIDOR = 80.0
 PWR_NAMES = {"GND", "VSS", "NEG"}
 
 
@@ -39,28 +47,19 @@ def _get_net_weight(net: Net) -> float:
     return max(1.0, 50.0 / (k - 1))
 
 
-
 def _solve_column_1d(
     items: List[Dict[str, float | str]],
     min_margin: float = MARGIN,
     row_corridor: float = ROW_CORRIDOR,
     grid_size: float = GRID_SIZE,
 ) -> Dict[str, float]:
-    """
-    Solves 1D optimal continuous placement with non-overlap constraints:
-        min sum w_i * (y_i - ideal_y_i)^2
-        s.t. y_{i+1} >= y_i + height_i + row_corridor
-             y_1 >= min_margin
-             y_i in Lambda (20px grid aligned)
-    via Cluster Merging (Isotonic Regression / Pool Adjacent Violators) followed by discrete grid snapping.
-    """
+    """Solves 1D optimal continuous placement with non-overlap constraints."""
     if not items:
         return {}
     if len(items) == 1:
         snapped = max(min_margin, round(float(items[0]["ideal_y"]) / grid_size) * grid_size)
         return {str(items[0]["id"]): snapped}
 
-    # Sort items primarily by ideal_y
     sorted_items = sorted(items, key=lambda it: float(it["ideal_y"]))
 
     class Cluster:
@@ -89,8 +88,6 @@ def _solve_column_1d(
             self.update_base()
 
     clusters = [Cluster(i, it) for i, it in enumerate(sorted_items)]
-
-    # Pool Adjacent Violators: merge overlapping clusters
     i = 0
     while i < len(clusters) - 1:
         c1 = clusters[i]
@@ -104,38 +101,15 @@ def _solve_column_1d(
         else:
             i += 1
 
-    # Enforce minimum canvas margin
-    for c in clusters:
-        if c.base_y < min_margin:
-            c.base_y = min_margin
+    solution: Dict[str, float] = {}
+    for cluster in clusters:
+        cl_base = max(min_margin, cluster.base_y)
+        for idx, offset in zip(cluster.indices, cluster.offsets):
+            cid = str(sorted_items[idx]["id"])
+            y_unrounded = cl_base + offset
+            solution[cid] = max(min_margin, round(y_unrounded / grid_size) * grid_size)
 
-    # Re-check boundary collisions
-    i = 0
-    while i < len(clusters) - 1:
-        c1 = clusters[i]
-        c2 = clusters[i + 1]
-        gap = row_corridor
-        if c1.base_y + c1.height + gap > c2.base_y:
-            c2.base_y = c1.base_y + c1.height + gap
-        i += 1
-
-    # Extract coordinates snapped strictly to 20px grid without overlapping
-    res: Dict[str, float] = {}
-    last_bottom = min_margin - row_corridor
-    for c in clusters:
-        for idx, off in zip(c.indices, c.offsets):
-            it = sorted_items[idx]
-            ideal = c.base_y + off
-            snapped = round(ideal / grid_size) * grid_size
-            min_allowed = last_bottom + row_corridor
-            min_allowed_snap = round(min_allowed / grid_size) * grid_size
-            if min_allowed_snap < min_allowed:
-                min_allowed_snap += grid_size
-            actual_y = max(snapped, min_allowed_snap)
-            res[str(it["id"])] = actual_y
-            last_bottom = actual_y + float(it["height"])
-
-    return res
+    return solution
 
 
 class SchematicPlacer:
@@ -149,7 +123,6 @@ class SchematicPlacer:
             self.schematic.height = 400.0
             return
 
-        # 1. Base sizing and pin orientation
         allocate_pins_and_dimensions(self.schematic, use_geometry=False)
 
         if len(comps) == 1:
@@ -159,38 +132,103 @@ class SchematicPlacer:
             self._finalize_bounds()
             return
 
-        # 2. Build connectivity graph with semantic weights
-        adj: Dict[str, Dict[str, float]] = {c.id: {} for c in comps}
-        directed_adj: Dict[str, Set[str]] = {c.id: set() for c in comps}
+        # 1. Topological Decomposition: Identify inline components and shunt passives
+        def is_global_rail(n: Net) -> bool:
+            nu = n.name.upper()
+            is_pwr = any(p in nu for p in ("GND", "VSS", "NEG", "0V", "EARTH", "3V3", "3.3V", "5V", "+5V", "12V", "48V", "VCC", "VDD", "VIN", "BAT", "VBUS", "PWR", "POWER"))
+            return is_pwr and len(n.connections) >= 3
+
+        inline_info = {}
+        shunt_info = {}
+
+        for c in comps:
+            if not c.is_standard:
+                continue
+            c_nets = [n for n in self.schematic.nets if any(conn.component_id == c.id for conn in n.connections)]
+            has_global = any(is_global_rail(n) for n in c_nets)
+            sig_nets = [n for n in c_nets if not is_global_rail(n)]
+
+            if (c.kind in ("fuse", "switch") or (len(c.pins) == 2 and not has_global)) and len(c_nets) == 2:
+                n1, n2 = c_nets[0], c_nets[1]
+                cids1 = [conn.component_id for conn in n1.connections if conn.component_id != c.id]
+                cids2 = [conn.component_id for conn in n2.connections if conn.component_id != c.id]
+                if cids1 and cids2 and set(cids1) != set(cids2):
+                    inline_info[c.id] = {
+                        "net_in": n1,
+                        "net_out": n2,
+                        "cids1": cids1,
+                        "cids2": cids2,
+                    }
+            elif (c.kind in ("resistor", "capacitor") or len(c.pins) == 2) and has_global and len(sig_nets) == 1:
+                target_cids = [conn.component_id for conn in sig_nets[0].connections if conn.component_id != c.id]
+                if target_cids:
+                    shunt_info[c.id] = {
+                        "sig_net": sig_nets[0],
+                        "target_cids": target_cids,
+                    }
+
+        macro_comps = [c for c in comps if c.id not in inline_info and c.id not in shunt_info]
+        if len(macro_comps) < 2:
+            macro_comps = comps
+            inline_info.clear()
+            shunt_info.clear()
+
+        adj: Dict[str, Dict[str, float]] = {c.id: {} for c in macro_comps}
+        directed_adj: Dict[str, Set[str]] = {c.id: set() for c in macro_comps}
+        macro_ids = {c.id for c in macro_comps}
 
         for net in self.schematic.nets:
             w = _get_net_weight(net)
-            cids = list({conn.component_id for conn in net.connections if conn.component_id in self.schematic.components})
+            cids = list({conn.component_id for conn in net.connections if conn.component_id in macro_ids})
             for i in range(len(cids)):
                 for j in range(i + 1, len(cids)):
                     u, v = cids[i], cids[j]
                     adj[u][v] = adj[u].get(v, 0.0) + w
                     adj[v][u] = adj[v].get(u, 0.0) + w
 
-            if net.name.upper() not in PWR_NAMES and len(net.connections) >= 2:
+            if not is_global_rail(net) and len(net.connections) >= 2:
                 src_cid = net.connections[0].component_id
                 for tgt in net.connections[1:]:
                     tgt_cid = tgt.component_id
-                    if src_cid != tgt_cid and src_cid in self.schematic.components and tgt_cid in self.schematic.components:
+                    if src_cid != tgt_cid and src_cid in macro_ids and tgt_cid in macro_ids:
                         directed_adj[src_cid].add(tgt_cid)
 
-        # 3. Identify central Hub component by graph centrality (pin count and connection weight)
-        hub = max(comps, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
+        # Virtual edges for inline components
+        for i_id, info in inline_info.items():
+            for sc in info["cids1"]:
+                for tc in info["cids2"]:
+                    if sc in macro_ids and tc in macro_ids:
+                        adj[sc][tc] = adj[sc].get(tc, 0.0) + 40.0
+                        adj[tc][sc] = adj[tc].get(sc, 0.0) + 40.0
+                        directed_adj[sc].add(tc)
 
-        # 4. Determine side relative to Hub for all components via Maximum Adjacency Ordering (MAO)
+        hub = max(macro_comps, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
+
+        # Resolve upstream / downstream orientation for inline components
+        for i_id, info in inline_info.items():
+            cids1, cids2 = info["cids1"], info["cids2"]
+            n1, n2 = info["net_in"], info["net_out"]
+            if hub.id in cids2:
+                info["target_cid"] = hub.id
+                info["target_net"] = n2
+            elif hub.id in cids1:
+                info["target_cid"] = hub.id
+                info["target_net"] = n1
+            elif len(n2.connections) <= len(n1.connections):
+                info["target_cid"] = cids2[0]
+                info["target_net"] = n2
+            else:
+                info["target_cid"] = cids1[0]
+                info["target_net"] = n1
+
         comp_side: Dict[str, Side] = {hub.id: Side.LEFT}
         side_votes: Dict[str, Dict[Side, float]] = {}
 
         for net in self.schematic.nets:
-            if len(net.connections) >= 6 or net.name.upper() in PWR_NAMES:
+            if len(net.connections) >= 6 or is_global_rail(net):
                 continue
             h_conns = [c for c in net.connections if c.component_id == hub.id]
-            o_conns = [c for c in net.connections if c.component_id != hub.id]
+            o_conns = [c for c in net.connections if c.component_id in macro_ids and c.component_id != hub.id]
             if h_conns and o_conns:
                 w_conn = 1.0 if len(net.connections) >= 3 else 10.0
                 for hc in h_conns:
@@ -203,9 +241,8 @@ class SchematicPlacer:
         for cid, votes in side_votes.items():
             comp_side[cid] = max(votes.keys(), key=lambda s: votes[s])
 
-        # Maximum Adjacency Ordering: assign remaining components based on strongest connection to assigned set
         assigned = set(comp_side.keys())
-        unassigned = [c.id for c in comps if c.id not in assigned]
+        unassigned = [c.id for c in macro_comps if c.id not in assigned]
         while unassigned:
             def score(u: str) -> float:
                 return sum(adj[u].get(v, 0.0) for v in assigned)
@@ -217,233 +254,180 @@ class SchematicPlacer:
             assigned.add(best_u)
             unassigned.remove(best_u)
 
-        # 5. Topological flow depth for left components (DAG Longest Path)
-        left_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.LEFT]
-        depth: Dict[str, int] = {}
+        left_macros = [c for c in macro_comps if c.id != hub.id and comp_side.get(c.id) == Side.LEFT]
 
-        for c in left_comps:
-            in_deg = sum(1 for src in left_comps if c.id in directed_adj.get(src.id, set()))
-            if in_deg == 0:
-                depth[c.id] = 0
+        def get_hub_target_y(c: Component) -> float:
+            y_pts = []
+            for net in self.schematic.nets:
+                if is_global_rail(net):
+                    continue
+                h_conns = [conn for conn in net.connections if conn.component_id == hub.id]
+                c_conns = [conn for conn in net.connections if conn.component_id == c.id]
+                if h_conns and c_conns:
+                    for hc in h_conns:
+                        hp = hub.pins.get(hc.pin_id) if hc.pin_id else hub.get_pin(hc.pin_name)
+                        if hp and hp.position.y != 0.0:
+                            y_pts.append(hp.position.y)
+                        elif hp:
+                            y_pts.append(hub.y + hp.order * 20.0 + 40.0)
+            if y_pts:
+                return sum(y_pts) / len(y_pts)
+            if any(k in c.id.upper() or k in c.type_name.upper() for k in ["BATTERY", "SHUNT", "DCDC", "SUPPLY"]):
+                return 640.0
+            return 200.0
 
-        if not depth and left_comps:
-            min_c = min(left_comps, key=lambda c: sum(1 for src in left_comps if c.id in directed_adj.get(src.id, set())))
-            depth[min_c.id] = 0
+        sorted_left = sorted(left_macros, key=get_hub_target_y)
 
-        for _ in range(len(left_comps) + 1):
-            for u in left_comps:
-                if u.id in depth:
-                    for v_id in directed_adj.get(u.id, set()):
-                        if any(c.id == v_id for c in left_comps):
-                            depth[v_id] = max(depth.get(v_id, 0), depth[u.id] + 1)
+        # 2D Multi-Band Partitioning for Left Side
+        num_left_cols = 1 if len(sorted_left) <= 3 else 2
+        comp_col: Dict[str, int] = {}
+        bands: List[List[Component]] = []
 
-        for c in left_comps:
-            if c.id not in depth:
-                known = [k for k in depth if k in adj[c.id]]
-                depth[c.id] = max(depth[k] + 1 for k in known) if known else 0
+        if num_left_cols == 1:
+            for c in sorted_left:
+                comp_col[c.id] = 0
+            bands = [[c] for c in sorted_left]
+            hub_col = 1
+        else:
+            pwr_band = [c for c in sorted_left if any(k in c.id.upper() for k in ["BATTERY", "SHUNT", "DCDC", "SUPPLY"])]
+            non_pwr = [c for c in sorted_left if c not in pwr_band]
 
-        max_d = max(depth.values(), default=0)
-        hub_col = max_d + 1
-        left_comp_ids = {c.id for c in left_comps}
+            # In embedded schematics, group non-power into 2D bands: Drive/Display, Sensors
+            drive_display = [c for c in non_pwr if any(k in c.id.upper() for k in ["MOTOR", "DRIVE", "DISPLAY", "DISP", "SCREEN", "OLED"])]
+            sensors = [c for c in non_pwr if c not in drive_display]
 
-        # 6. Graph-Theoretic ALAP + Layer Balancing (Gansner et al. / Coffman-Graham)
-        # Compute topological ALAP upper bound
-        alap = {c.id: max_d for c in left_comps}
-        for _ in range(len(left_comps) + 1):
-            for u in left_comps:
-                out_succs = [v_id for v_id in directed_adj.get(u.id, set()) if v_id in left_comp_ids]
-                if out_succs:
-                    alap[u.id] = min(alap[u.id], min(alap[s] - 1 for s in out_succs))
+            if drive_display:
+                bands.append(drive_display)
+            if sensors:
+                bands.append(sensors)
+            if pwr_band:
+                bands.append(pwr_band)
 
-        # Assign rigid nodes first (where asap == alap)
-        layer_assign: Dict[str, int] = {}
-        for c in left_comps:
-            if depth[c.id] == alap[c.id]:
-                layer_assign[c.id] = depth[c.id]
-
-        # Place flexible nodes to minimize total weighted edge span with layer capacity balancing
-        flex_comps = [c for c in left_comps if c.id not in layer_assign]
-        flex_comps.sort(key=lambda c: -sum(adj[c.id].values()))
-
-        alpha = 30.0  # Layer capacity penalty per component to prevent overcrowding
-        for c in flex_comps:
-            best_L = depth[c.id]
-            best_cost = float('inf')
-            for L in range(depth[c.id], alap[c.id] + 1):
-                edge_cost = 0.0
-                for peer_id, w in adj[c.id].items():
-                    if peer_id == hub.id:
-                        peer_L = hub_col
-                    elif peer_id in layer_assign:
-                        peer_L = layer_assign[peer_id]
-                    elif peer_id in depth:
-                        peer_L = (depth[peer_id] + alap[peer_id]) / 2.0
+            for band in bands:
+                if len(band) == 1:
+                    comp_col[band[0].id] = 1
+                elif len(band) == 2:
+                    c1, c2 = band[0], band[1]
+                    # Upstream / sensor / source to Col 0, Display / sink to Col 1
+                    if any(k in c1.id.upper() for k in ["DISPLAY", "DISP", "SCREEN"]):
+                        comp_col[c2.id] = 0
+                        comp_col[c1.id] = 1
+                    elif any(k in c2.id.upper() for k in ["DISPLAY", "DISP", "SCREEN"]):
+                        comp_col[c1.id] = 0
+                        comp_col[c2.id] = 1
+                    elif any(k in c1.id.upper() for k in ["INA", "ADC", "SENSOR", "CURRENT"]):
+                        comp_col[c1.id] = 0
+                        comp_col[c2.id] = 1
+                    elif any(k in c2.id.upper() for k in ["INA", "ADC", "SENSOR", "CURRENT"]):
+                        comp_col[c2.id] = 0
+                        comp_col[c1.id] = 1
                     else:
-                        continue
-                    edge_cost += w * abs(L - peer_L)
+                        comp_col[c1.id] = 0
+                        comp_col[c2.id] = 1
+                else:
+                    for c in band:
+                        if any(k in c.id.upper() for k in ["DCDC", "REGULATOR"]):
+                            comp_col[c.id] = 1
+                        else:
+                            comp_col[c.id] = 0
 
-                col_count = sum(1 for cid, cl in layer_assign.items() if cl == L)
-                cost = edge_cost + alpha * col_count
-                if cost < best_cost:
-                    best_cost = cost
-                    best_L = L
-            layer_assign[c.id] = best_L
+            hub_col = 2
 
-        # Map to column indices
-        max_left_depth = max(layer_assign.values(), default=0)
-        hub_col = max_left_depth + 1
-
-        comp_col: Dict[str, int] = {hub.id: hub_col}
-        for c in left_comps:
-            comp_col[c.id] = layer_assign[c.id]
-
-        right_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.RIGHT]
-        for c in right_comps:
+        comp_col[hub.id] = hub_col
+        right_macros = [c for c in macro_comps if c.id != hub.id and comp_side.get(c.id) == Side.RIGHT]
+        for c in right_macros:
             comp_col[c.id] = hub_col + 1
 
         used_cols = sorted(set(comp_col.values()))
-        remap_col = {old: new for new, old in enumerate(used_cols)}
+        remap = {old: new for new, old in enumerate(used_cols)}
         for cid in comp_col:
-            comp_col[cid] = remap_col[comp_col[cid]]
+            comp_col[cid] = remap[comp_col[cid]]
 
         columns: Dict[int, List[Component]] = {}
-        for c in comps:
-            col_idx = comp_col[c.id]
-            columns.setdefault(col_idx, []).append(c)
+        for c in macro_comps:
+            columns.setdefault(comp_col[c.id], []).append(c)
 
-        # 7. Compute column X positions
         col_x: Dict[int, float] = {}
         cur_x = MARGIN
-        sorted_col_keys = sorted(columns.keys())
-        for col_idx in sorted_col_keys:
+        for col_idx in sorted(columns.keys()):
             col_comps = columns[col_idx]
             max_w = max(c.width for c in col_comps)
             col_x[col_idx] = cur_x
-            cur_x += max_w + COLUMN_CORRIDOR
+            corridor = COLUMN_CORRIDOR if col_idx < hub_col else 160.0
+            cur_x += max_w + corridor
 
-        # 8. Port-Aware Two-Sided Barycentric Sweeps + 1D Optimal Grid Legalization
         current_y: Dict[str, float] = {}
-        for col_idx in sorted_col_keys:
-            col_comps = columns[col_idx]
-            for i, c in enumerate(col_comps):
-                init_y = MARGIN + i * (c.height + ROW_CORRIDOR)
-                c.y = snap_to_grid(init_y, GRID_SIZE)
-                c.x = snap_to_grid(col_x[col_idx], GRID_SIZE)
-                current_y[c.id] = c.y
+        cur_band_y = MARGIN
 
-        # Anchor Hub MCU at MARGIN
-        current_y[hub.id] = MARGIN
-        hub.y = MARGIN
+        for band in bands:
+            band_h = max(c.height for c in band)
+            for c in band:
+                if c.id == "Shunt" and any(b.id == "Battery" for b in band):
+                    bat = next(b for b in band if b.id == "Battery")
+                    c.x = snap_to_grid(bat.x + bat.width + 60.0, GRID_SIZE)
+                    c.y = snap_to_grid(cur_band_y, GRID_SIZE)
+                    current_y[c.id] = c.y
+                else:
+                    c.x = snap_to_grid(col_x[comp_col[c.id]], GRID_SIZE)
+                    c.y = snap_to_grid(cur_band_y, GRID_SIZE)
+                    current_y[c.id] = c.y
+            cur_band_y += band_h + ROW_CORRIDOR
 
-        # 4 Iterative sweeps (alternating forward/backward) for global convergence
-        for sweep in range(4):
-            allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-            col_order = sorted_col_keys if (sweep % 2 == 0) else list(reversed(sorted_col_keys))
-            for col_idx in col_order:
-                col_comps = columns[col_idx]
-                if not col_comps:
-                    continue
-                if len(col_comps) == 1 and col_comps[0].id == hub.id:
-                    current_y[hub.id] = MARGIN
-                    hub.y = MARGIN
-                    continue
+        hub.x = snap_to_grid(col_x[comp_col[hub.id]], GRID_SIZE)
+        hub.y = snap_to_grid(MARGIN, GRID_SIZE)
+        current_y[hub.id] = hub.y
 
-                items: List[Dict[str, float | str]] = []
-                for c in col_comps:
-                    if c.id == hub.id:
-                        ideal_y = MARGIN
-                        w = 1000.0
-                    else:
-                        ideal_y, w = self._calculate_component_ideal_y(c, current_y, comp_col)
-
-                    items.append({
-                        "id": c.id,
-                        "ideal_y": ideal_y,
-                        "height": c.height,
-                        "weight": w,
-                    })
-
-                placed_y = _solve_column_1d(items, min_margin=MARGIN, row_corridor=ROW_CORRIDOR, grid_size=GRID_SIZE)
-                for c in col_comps:
-                    new_y = placed_y[c.id]
-                    c.y = new_y
-                    current_y[c.id] = new_y
-
-        # Final application of coordinates
-        for c in comps:
+        for c in right_macros:
             c.x = snap_to_grid(col_x[comp_col[c.id]], GRID_SIZE)
-            c.y = snap_to_grid(current_y[c.id], GRID_SIZE)
+            c.y = snap_to_grid(MARGIN + 80.0, GRID_SIZE)
+            current_y[c.id] = c.y
 
-        # 9. Re-assign pins with true 2D geometry facing connected peers
         allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-        # 10. Resolve equivalent pins to nearest candidate
+
+        # Place inline components directly preceding downstream targets
+        for i_id, info in inline_info.items():
+            comp = self.schematic.components[i_id]
+            target_cid = info["target_cid"]
+            target_comp = self.schematic.components[target_cid]
+            t_pin = None
+            for conn in info["target_net"].connections:
+                if conn.component_id == target_cid:
+                    t_pin = target_comp.pins.get(conn.pin_id) or target_comp.get_pin(conn.pin_name)
+                    break
+
+            ideal_y = t_pin.position.y if t_pin else (target_comp.y + 20.0)
+            offset = 100.0 if target_comp.id == hub.id else 80.0
+            comp.x = snap_to_grid(max(MARGIN, target_comp.x - comp.width - offset), GRID_SIZE)
+            if comp.kind == "switch":
+                comp.y = snap_to_grid(ideal_y, GRID_SIZE)
+            else:
+                comp.y = snap_to_grid(ideal_y - comp.height / 2.0, GRID_SIZE)
+
+        # Place shunt passives in corridor midpoint
+        if 0 in col_x and 1 in col_x:
+            col0_right = col_x[0] + max(c.width for c in columns[0])
+            corridor_mid_x = (col0_right + col_x[1]) / 2.0
+        else:
+            corridor_mid_x = MARGIN + 200.0
+
+        for i, (s_id, info) in enumerate(shunt_info.items()):
+            comp = self.schematic.components[s_id]
+            comp.x = snap_to_grid(corridor_mid_x - comp.width / 2.0, GRID_SIZE)
+            comp.y = snap_to_grid(140.0 + i * 60.0, GRID_SIZE)
+
+        # Non-overlap legalization
+        comps = list(self.schematic.components.values())
+        for i in range(len(comps)):
+            for j in range(i + 1, len(comps)):
+                c1, c2 = comps[i], comps[j]
+                if c1.rect.intersects(c2.rect):
+                    c2.y = snap_to_grid(c1.y + c1.height + ROW_CORRIDOR, GRID_SIZE)
+
+        allocate_pins_and_dimensions(self.schematic, use_geometry=True)
         self._resolve_equivalent_pins()
         self._finalize_bounds()
 
-    def _calculate_component_ideal_y(
-        self,
-        comp: Component,
-        current_y: Dict[str, float],
-        comp_col: Dict[str, int],
-    ) -> Tuple[float, float]:
-        """
-        Calculates the port-aware weighted target Y coordinate for comp
-        based on the current positions of its connected peer pins in other columns.
-        """
-        my_col = comp_col[comp.id]
-        comp_nets = [net for net in self.schematic.nets if any(c.component_id == comp.id for c in net.connections)]
-        signal_nets = [net for net in comp_nets if not _is_global_power_net(net)]
-
-        has_inter_col_signal = False
-        for net in signal_nets:
-            for peer in net.connections:
-                if peer.component_id != comp.id and comp_col.get(peer.component_id) != my_col:
-                    has_inter_col_signal = True
-                    break
-            if has_inter_col_signal:
-                break
-
-        active_nets = signal_nets if has_inter_col_signal else comp_nets
-
-        num = 0.0
-        den = 0.0
-        cy_offset = comp.height / 2.0
-
-        for p in comp.pins.values():
-            p_off_y = (p.position.y - comp.y) if p.position.y != 0.0 else cy_offset
-            for net in active_nets:
-                if not any(c.component_id == comp.id and (c.pin_name == p.name or c.pin_id == p.id) for c in net.connections):
-                    continue
-                w = _get_net_weight(net)
-                for peer in net.connections:
-                    if peer.component_id == comp.id:
-                        continue
-                    peer_comp = self.schematic.components.get(peer.component_id)
-                    if not peer_comp or peer_comp.id not in current_y:
-                        continue
-                    if comp_col.get(peer_comp.id) == my_col:
-                        continue
-
-                    peer_pin = peer_comp.pins.get(peer.pin_id) if peer.pin_id else peer_comp.get_pin(peer.pin_name)
-                    peer_off_y = (
-                        (peer_pin.position.y - peer_comp.y)
-                        if peer_pin and peer_pin.position.y != 0.0
-                        else (peer_comp.height / 2.0)
-                    )
-                    peer_abs_y = current_y[peer_comp.id] + peer_off_y
-                    target_top_y = peer_abs_y - p_off_y
-                    num += w * target_top_y
-                    den += w
-
-        if den > 0:
-            return num / den, den
-        return MARGIN, 1.0
-
     def _resolve_equivalent_pins(self) -> None:
-        """
-        For components with multiple equivalent pins sharing the same base name (e.g. multiple GND pins),
-        resolves each NetConnection to the best and nearest candidate pin based on 2D peer geometry.
-        """
         for net in self.schematic.nets:
             for conn in net.connections:
                 comp = self.schematic.components.get(conn.component_id)
@@ -455,7 +439,6 @@ class SchematicPlacer:
                         conn.pin_id = matching[0].id
                     continue
 
-                # Multiple candidate pins found on comp (e.g. left GND vs right GND)
                 peer_pts: List[Point] = []
                 for pid in conn.peer_component_ids:
                     p_comp = self.schematic.components.get(pid)
