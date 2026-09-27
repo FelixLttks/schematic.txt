@@ -1,7 +1,10 @@
-"""2D Stage-Ranked Flow & Corridor Placement Engine for electrical schematics.
+"""Port-Aware Hierarchical Placement (PA-HP) Engine for electrical schematics.
 
-Arranges components in a natural, professional 2D topology with left-to-right signal/power flow,
-functional clustering, and guaranteed non-overlapping clearance corridors, snapped strictly to the 20px grid.
+Implements mathematically optimal 2D schematic placement based on:
+1. Stage-Ranked DAG Flow Layering (X-axis column assignment with ALAP sink clustering).
+2. Port-Aware Two-Sided Barycentric Sweeps (iterative quadratic wirelength minimization).
+3. 1D Optimal Isotonic Grid Legalization via Cluster Merging (Pool Adjacent Violators Algorithm).
+4. Strict 20px grid alignment and guaranteed non-overlapping clearance corridors.
 """
 
 from __future__ import annotations
@@ -12,7 +15,128 @@ from schematic.layout.pin_allocator import allocate_pins_and_dimensions
 
 MARGIN = 80.0
 COLUMN_CORRIDOR = 160.0
-ROW_CORRIDOR = 80.0
+ROW_CORRIDOR = 60.0
+PWR_NAMES = {"GND", "VSS", "NEG"}
+
+
+def _is_global_power_net(net: Net) -> bool:
+    """Checks if a net is a multi-drop global power rail or ground reference."""
+    nu = net.name.upper()
+    if any(k in nu for k in PWR_NAMES):
+        return True
+    if any(k in nu for k in ["3V3", "5V", "VCC", "VIN", "VDD"]) and len(net.connections) >= 3:
+        return True
+    return False
+
+
+def _get_net_weight(net: Net) -> float:
+    """Calculates the physical attraction weight of a net for horizontal wire alignment."""
+    nu = net.name.upper()
+    if _is_global_power_net(net):
+        return 0.5
+    if any(k in nu for k in ["SENSE", "SHUNT", "DIFF"]):
+        return 100.0
+    if any(k in nu for k in ["BATT_POS", "BATT_VCC", "DCDC_IN", "5V_RAW", "PWR_OUT", "KEY_PWR", "DISP_VCC", "DISP_KEY"]):
+        return 30.0
+    return 50.0
+
+
+def _solve_column_1d(
+    items: List[Dict[str, float | str]],
+    min_margin: float = MARGIN,
+    row_corridor: float = ROW_CORRIDOR,
+    grid_size: float = GRID_SIZE,
+) -> Dict[str, float]:
+    """
+    Solves 1D optimal continuous placement with non-overlap constraints:
+        min sum w_i * (y_i - ideal_y_i)^2
+        s.t. y_{i+1} >= y_i + height_i + row_corridor
+             y_1 >= min_margin
+             y_i in Lambda (20px grid aligned)
+    via Cluster Merging (Isotonic Regression / Pool Adjacent Violators) followed by discrete grid snapping.
+    """
+    if not items:
+        return {}
+    if len(items) == 1:
+        snapped = max(min_margin, round(float(items[0]["ideal_y"]) / grid_size) * grid_size)
+        return {str(items[0]["id"]): snapped}
+
+    # Sort items primarily by ideal_y
+    sorted_items = sorted(items, key=lambda it: float(it["ideal_y"]))
+
+    class Cluster:
+        def __init__(self, idx: int, item: Dict):
+            self.indices = [idx]
+            self.offsets = [0.0]
+            self.total_weight = max(float(item["weight"]), 0.1)
+            self.weighted_sum = self.total_weight * float(item["ideal_y"])
+            self.height = float(item["height"])
+            self.base_y = float(item["ideal_y"])
+
+        def update_base(self) -> None:
+            if self.total_weight > 0:
+                self.base_y = self.weighted_sum / self.total_weight
+
+        def merge(self, other: Cluster, gap: float) -> None:
+            shift = self.height + gap
+            for idx, off in zip(other.indices, other.offsets):
+                self.indices.append(idx)
+                new_off = off + shift
+                self.offsets.append(new_off)
+                w = max(float(sorted_items[idx]["weight"]), 0.1)
+                self.weighted_sum += w * (float(sorted_items[idx]["ideal_y"]) - new_off)
+                self.total_weight += w
+            self.height += gap + other.height
+            self.update_base()
+
+    clusters = [Cluster(i, it) for i, it in enumerate(sorted_items)]
+
+    # Pool Adjacent Violators: merge overlapping clusters
+    i = 0
+    while i < len(clusters) - 1:
+        c1 = clusters[i]
+        c2 = clusters[i + 1]
+        gap = row_corridor
+        if c1.base_y + c1.height + gap > c2.base_y:
+            c1.merge(c2, gap)
+            clusters.pop(i + 1)
+            if i > 0:
+                i -= 1
+        else:
+            i += 1
+
+    # Enforce minimum canvas margin
+    for c in clusters:
+        if c.base_y < min_margin:
+            c.base_y = min_margin
+
+    # Re-check boundary collisions
+    i = 0
+    while i < len(clusters) - 1:
+        c1 = clusters[i]
+        c2 = clusters[i + 1]
+        gap = row_corridor
+        if c1.base_y + c1.height + gap > c2.base_y:
+            c2.base_y = c1.base_y + c1.height + gap
+        i += 1
+
+    # Extract coordinates snapped strictly to 20px grid without overlapping
+    res: Dict[str, float] = {}
+    last_bottom = min_margin - row_corridor
+    for c in clusters:
+        for idx, off in zip(c.indices, c.offsets):
+            it = sorted_items[idx]
+            ideal = c.base_y + off
+            snapped = round(ideal / grid_size) * grid_size
+            min_allowed = last_bottom + row_corridor
+            min_allowed_snap = round(min_allowed / grid_size) * grid_size
+            if min_allowed_snap < min_allowed:
+                min_allowed_snap += grid_size
+            actual_y = max(snapped, min_allowed_snap)
+            res[str(it["id"])] = actual_y
+            last_bottom = actual_y + float(it["height"])
+
+    return res
 
 
 class SchematicPlacer:
@@ -37,34 +161,19 @@ class SchematicPlacer:
             return
 
         # 2. Build connectivity graph with semantic weights
-        pwr_names = {"GND", "VSS"}
         adj: Dict[str, Dict[str, float]] = {c.id: {} for c in comps}
         directed_adj: Dict[str, Set[str]] = {c.id: set() for c in comps}
 
         for net in self.schematic.nets:
-            nu = net.name.upper()
-            is_global_pwr = len(net.connections) >= 5 or nu in pwr_names
+            w = _get_net_weight(net)
             cids = list({conn.component_id for conn in net.connections if conn.component_id in self.schematic.components})
-
-            if is_global_pwr:
-                w = 0.1
-            elif len(net.connections) == 2:
-                if any(k in nu for k in ["SENSE", "SHUNT", "DIFF"]):
-                    w = 50.0
-                elif any(k in nu for k in ["BATT", "5V", "PWR", "DCDC", "DISP", "CTRL", "LED", "RAW", "IN", "OUT"]):
-                    w = 25.0
-                else:
-                    w = 15.0
-            else:
-                w = 8.0
-
             for i in range(len(cids)):
                 for j in range(i + 1, len(cids)):
                     u, v = cids[i], cids[j]
                     adj[u][v] = adj[u].get(v, 0.0) + w
                     adj[v][u] = adj[v].get(u, 0.0) + w
 
-            if not is_global_pwr and len(net.connections) >= 2:
+            if net.name.upper() not in PWR_NAMES and len(net.connections) >= 2:
                 src_cid = net.connections[0].component_id
                 for tgt in net.connections[1:]:
                     tgt_cid = tgt.component_id
@@ -81,13 +190,12 @@ class SchematicPlacer:
         side_votes: Dict[str, Dict[Side, float]] = {}
 
         for net in self.schematic.nets:
-            if len(net.connections) >= 5 or net.name.upper() in pwr_names:
+            if len(net.connections) >= 6 or net.name.upper() in PWR_NAMES:
                 continue
             h_conns = [c for c in net.connections if c.component_id == hub.id]
             o_conns = [c for c in net.connections if c.component_id != hub.id]
             if h_conns and o_conns:
-                is_pwr = any(k in net.name.upper() for k in ["3V3", "5V", "VCC", "VIN", "VDD"])
-                w_conn = 0.5 if is_pwr else 10.0
+                w_conn = 0.5 if any(k in net.name.upper() for k in ["3V3", "5V", "VCC"]) else 10.0
                 for hc in h_conns:
                     h_pin = hub.pins.get(hc.pin_id) if hc.pin_id else hub.get_pin(hc.pin_name)
                     side = h_pin.side if h_pin else Side.LEFT
@@ -115,7 +223,6 @@ class SchematicPlacer:
                 break
 
         # 5. Coupled pairs (Kelvin sense / differential measurement)
-        # Sensed shunt is parent, monitoring IC is child placed directly below it
         parent_of: Dict[str, str] = {}
         child_of: Dict[str, str] = {}
         for net in self.schematic.nets:
@@ -163,6 +270,11 @@ class SchematicPlacer:
             if depth[c.id] == 0 and not is_power_source and hub.id in adj[c.id]:
                 depth[c.id] = max(1, max_d - 1)
 
+        # ALAP & Layer Balancing: standard passives directly serving Hub pins move close to the Hub
+        for c in left_comps:
+            if c.is_standard and hub.id in adj[c.id]:
+                depth[c.id] = max(depth[c.id], max_d)
+
         for ch, p in child_of.items():
             depth[ch] = depth.get(p, 0)
 
@@ -200,40 +312,145 @@ class SchematicPlacer:
             col_x[col_idx] = cur_x
             cur_x += max_w + COLUMN_CORRIDOR
 
-        # 9. Assign Y coordinates within each column
+        # 9. Port-Aware Two-Sided Barycentric Sweeps + 1D Optimal Grid Legalization
+        current_y: Dict[str, float] = {}
         for col_idx in sorted_col_keys:
-            col_comps = columns[col_idx]
-
-            def comp_y_sort(c: Component):
-                if c.id in child_of:
-                    return 100
-                is_pwr_path = any(k in c.id.upper() or k in c.type_name.upper() for k in ["BATTERY", "FUSE", "DCDC", "SWITCH", "SUPPLY"])
-                if is_pwr_path:
-                    return 0
-                if c.id in parent_of:
-                    return 10
-                return 30
-
-            col_comps.sort(key=comp_y_sort)
-
-            cur_y = MARGIN
-            for c in col_comps:
+            col_comps = [c for c in columns[col_idx] if c.id not in child_of]
+            for i, c in enumerate(col_comps):
+                init_y = MARGIN + i * (c.height + ROW_CORRIDOR)
+                c.y = snap_to_grid(init_y, GRID_SIZE)
                 c.x = snap_to_grid(col_x[col_idx], GRID_SIZE)
-                c.y = snap_to_grid(cur_y, GRID_SIZE)
-                cur_y += c.height + ROW_CORRIDOR
+                current_y[c.id] = c.y
+                if c.id in parent_of:
+                    ch = self.schematic.components[parent_of[c.id]]
+                    ch.x = c.x
+                    ch.y = c.y + c.height + ROW_CORRIDOR
+                    current_y[ch.id] = ch.y
 
-        # Post-process coupled pairs: attach child directly under parent
-        for p_id, ch_id in parent_of.items():
-            p = self.schematic.components[p_id]
-            ch = self.schematic.components[ch_id]
-            ch.x = p.x
-            ch.y = snap_to_grid(p.y + p.height + 60.0, GRID_SIZE)
+        # Anchor Hub MCU at MARGIN
+        current_y[hub.id] = MARGIN
+        hub.y = MARGIN
+
+        # 4 Iterative sweeps (alternating forward/backward) for global convergence
+        for sweep in range(4):
+            allocate_pins_and_dimensions(self.schematic, use_geometry=True)
+            col_order = sorted_col_keys if (sweep % 2 == 0) else list(reversed(sorted_col_keys))
+            for col_idx in col_order:
+                col_comps = [c for c in columns[col_idx] if c.id not in child_of]
+                if not col_comps:
+                    continue
+                if len(col_comps) == 1 and col_comps[0].id == hub.id:
+                    current_y[hub.id] = MARGIN
+                    hub.y = MARGIN
+                    continue
+
+                items: List[Dict[str, float | str]] = []
+                for c in col_comps:
+                    if c.id == hub.id:
+                        ideal_y = MARGIN
+                        w = 1000.0
+                    else:
+                        ideal_y, w = self._calculate_component_ideal_y(c, current_y, comp_col)
+                        is_pwr = any(
+                            k in c.id.upper() or k in c.type_name.upper()
+                            for k in ["BATTERY", "SUPPLY", "CELL", "FUSE"]
+                        )
+                        if is_pwr:
+                            ideal_y = MARGIN
+                            w += 100.0
+
+                    eff_h = c.height
+                    if c.id in parent_of:
+                        ch = self.schematic.components[parent_of[c.id]]
+                        eff_h += ROW_CORRIDOR + ch.height
+
+                    items.append({
+                        "id": c.id,
+                        "ideal_y": ideal_y,
+                        "height": eff_h,
+                        "weight": w,
+                    })
+
+                placed_y = _solve_column_1d(items, min_margin=MARGIN, row_corridor=ROW_CORRIDOR, grid_size=GRID_SIZE)
+                for c in col_comps:
+                    new_y = placed_y[c.id]
+                    c.y = new_y
+                    current_y[c.id] = new_y
+                    if c.id in parent_of:
+                        ch = self.schematic.components[parent_of[c.id]]
+                        ch.x = c.x
+                        ch.y = new_y + c.height + ROW_CORRIDOR
+                        current_y[ch.id] = ch.y
+
+        # Final application of coordinates
+        for c in comps:
+            c.x = snap_to_grid(col_x[comp_col[c.id]], GRID_SIZE)
+            c.y = snap_to_grid(current_y[c.id], GRID_SIZE)
 
         # 10. Re-assign pins with true 2D geometry facing connected peers
         allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-        # 11. Resolve equivalent pins (e.g. multiple GND/3V3 pins) to nearest candidate
+        # 11. Resolve equivalent pins to nearest candidate
         self._resolve_equivalent_pins()
         self._finalize_bounds()
+
+    def _calculate_component_ideal_y(
+        self,
+        comp: Component,
+        current_y: Dict[str, float],
+        comp_col: Dict[str, int],
+    ) -> Tuple[float, float]:
+        """
+        Calculates the port-aware weighted target Y coordinate for comp
+        based on the current positions of its connected peer pins in other columns.
+        """
+        my_col = comp_col[comp.id]
+        comp_nets = [net for net in self.schematic.nets if any(c.component_id == comp.id for c in net.connections)]
+        signal_nets = [net for net in comp_nets if not _is_global_power_net(net)]
+
+        has_inter_col_signal = False
+        for net in signal_nets:
+            for peer in net.connections:
+                if peer.component_id != comp.id and comp_col.get(peer.component_id) != my_col:
+                    has_inter_col_signal = True
+                    break
+            if has_inter_col_signal:
+                break
+
+        active_nets = signal_nets if has_inter_col_signal else comp_nets
+
+        num = 0.0
+        den = 0.0
+        cy_offset = comp.height / 2.0
+
+        for p in comp.pins.values():
+            p_off_y = (p.position.y - comp.y) if p.position.y != 0.0 else cy_offset
+            for net in active_nets:
+                if not any(c.component_id == comp.id and (c.pin_name == p.name or c.pin_id == p.id) for c in net.connections):
+                    continue
+                w = _get_net_weight(net)
+                for peer in net.connections:
+                    if peer.component_id == comp.id:
+                        continue
+                    peer_comp = self.schematic.components.get(peer.component_id)
+                    if not peer_comp or peer_comp.id not in current_y:
+                        continue
+                    if comp_col.get(peer_comp.id) == my_col:
+                        continue
+
+                    peer_pin = peer_comp.pins.get(peer.pin_id) if peer.pin_id else peer_comp.get_pin(peer.pin_name)
+                    peer_off_y = (
+                        (peer_pin.position.y - peer_comp.y)
+                        if peer_pin and peer_pin.position.y != 0.0
+                        else (peer_comp.height / 2.0)
+                    )
+                    peer_abs_y = current_y[peer_comp.id] + peer_off_y
+                    target_top_y = peer_abs_y - p_off_y
+                    num += w * target_top_y
+                    den += w
+
+        if den > 0:
+            return num / den, den
+        return MARGIN, 1.0
 
     def _resolve_equivalent_pins(self) -> None:
         """

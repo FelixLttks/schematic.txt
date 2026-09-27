@@ -307,6 +307,27 @@ class TestLayoutAndRouting(unittest.TestCase):
                 self.assertEqual(p.position.x % 20.0, 0.0)
                 self.assertEqual(p.position.y % 20.0, 0.0)
 
+    def test_large_example_all_nets_routed(self):
+        with open("examples/example_large.txt") as f:
+            text = f.read()
+        sch = process_schematic(text)
+
+        # Ensure 3V3 and DISP_VCC have wires generated
+        v33_wires = [w for w in sch.wires if w.net_name == "3V3"]
+        disp_vcc_wires = [w for w in sch.wires if w.net_name == "DISP_VCC"]
+        self.assertGreater(len(v33_wires), 0, "Net 3V3 must have routed wires!")
+        self.assertGreater(len(disp_vcc_wires), 0, "Net DISP_VCC must have routed wires!")
+
+        # Verify every net with at least 2 connections has routed wires
+        for net in sch.nets:
+            if len(net.connections) >= 2:
+                net_wires = [w for w in sch.wires if w.net_name == net.name]
+                self.assertGreater(
+                    len(net_wires),
+                    0,
+                    f"Net {net.name} with {len(net.connections)} connections has 0 wires!",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

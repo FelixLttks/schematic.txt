@@ -80,19 +80,20 @@ class SchematicRouter:
             for p in c.pins.values():
                 self.blocked_nodes.add((round(p.position.x, 1), round(p.position.y, 1)))
 
-        # Identify pin escape nodes so foreign nets avoid blocking pin fan-out corridors
-        self.pin_escape_info: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
+        # Identify pin breakout corridors (depth of 3 grid units = 60px) so foreign nets cannot bend or block breakout rays
+        self.pin_corridor_info: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
         for c in comps:
             for p in c.pins.values():
-                if p.side == Side.LEFT:
-                    esc = (round(p.position.x - GRID_SIZE, 1), round(p.position.y, 1))
-                elif p.side == Side.RIGHT:
-                    esc = (round(p.position.x + GRID_SIZE, 1), round(p.position.y, 1))
-                elif p.side == Side.TOP:
-                    esc = (round(p.position.x, 1), round(p.position.y - GRID_SIZE, 1))
-                else:
-                    esc = (round(p.position.x, 1), round(p.position.y + GRID_SIZE, 1))
-                self.pin_escape_info.setdefault(esc, set()).add((c.id, p.name))
+                for k in range(1, 4):
+                    if p.side == Side.LEFT:
+                        node = (round(p.position.x - k * GRID_SIZE, 1), round(p.position.y, 1))
+                    elif p.side == Side.RIGHT:
+                        node = (round(p.position.x + k * GRID_SIZE, 1), round(p.position.y, 1))
+                    elif p.side == Side.TOP:
+                        node = (round(p.position.x, 1), round(p.position.y - k * GRID_SIZE, 1))
+                    else:
+                        node = (round(p.position.x, 1), round(p.position.y + k * GRID_SIZE, 1))
+                    self.pin_corridor_info.setdefault(node, set()).add((c.id, p.name))
 
         # 3. Sort nets: Signal nets first for direct routing, then power rails
         def net_sort_key(net: Net) -> Tuple[int, int, str]:
@@ -132,12 +133,16 @@ class SchematicRouter:
             net_edges: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
 
             unrouted = [p for p in pins if p not in tree_nodes]
-            while unrouted:
+            retry_budget = len(pins) * 2
+            while unrouted and retry_budget > 0:
+                retry_budget -= 1
                 pin = min(unrouted, key=lambda p: min(abs(p[0] - tn[0]) + abs(p[1] - tn[1]) for tn in tree_nodes))
                 unrouted.remove(pin)
 
                 path = self._a_star(pin, tree_nodes, net, min_x, max_x, min_y, max_y)
                 if not path:
+                    if unrouted:
+                        unrouted.append(pin)
                     continue
 
                 # Register used edges and nodes
@@ -242,9 +247,14 @@ class SchematicRouter:
 
                 is_bend = (dx != 0.0 or dy != 0.0) and (ndx != dx or ndy != dy)
 
-                # Strict rule: A foreign net may NEVER bend at a node visited by another net!
+                # Strict rule 1: A foreign net may NEVER bend at a node visited by another net!
                 u_occs = self.node_occupants.get(u)
                 if is_bend and u_occs and net_name not in u_occs:
+                    continue
+
+                # Strict rule 2: A foreign net may NEVER bend inside an active pin's breakout corridor!
+                foreign_corridor_u = self.pin_corridor_info.get(u)
+                if is_bend and foreign_corridor_u and not any(p in net_pins for p in foreign_corridor_u):
                     continue
 
                 step_cost = STEP_COST + (BEND_PENALTY if is_bend else 0.0)
@@ -258,9 +268,9 @@ class SchematicRouter:
                 if v_occs and net_name not in v_occs:
                     step_cost += CROSSING_PENALTY
 
-                # Escape corridor protection: foreign nets avoid blocking unowned pin fanout nodes
-                foreign_pins = self.pin_escape_info.get(v)
-                if foreign_pins and not any(p in net_pins for p in foreign_pins):
+                # Breakout corridor protection: foreign nets avoid blocking unowned pin fanout nodes
+                foreign_corridor_v = self.pin_corridor_info.get(v)
+                if foreign_corridor_v and not any(p in net_pins for p in foreign_corridor_v):
                     step_cost += PIN_ESCAPE_PENALTY
 
                 new_g = g + step_cost
