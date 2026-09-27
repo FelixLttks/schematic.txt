@@ -22,9 +22,31 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
     # 1. Build connection map: for each (comp_id, pin_name), which other components does it connect to?
     pin_peer_map: Dict[Tuple[str, str], List[str]] = {}
     pin_peer_pts: Dict[Tuple[str, str], List[Point]] = {}
+    pin_bundle_rank: Dict[Tuple[str, str], Tuple[Tuple[str, ...], int]] = {}
+
+    # Nets connected to the same component set form a bundle structurally.
+    # Give each member a common rank so the matched terminals occupy the same
+    # relative rows at every endpoint, regardless of pin names or signal type.
+    bundle_groups: Dict[Tuple[str, ...], List[Net]] = {}
+    for net in schematic.nets:
+        upper_name = net.name.upper()
+        if any(token in upper_name for token in ("GND", "VSS", "NEG")):
+            continue
+        if len(net.connections) >= 3 and any(token in upper_name for token in ("3V3", "3.3V", "5V", "VCC", "VIN", "VDD")):
+            continue
+        endpoints = tuple(sorted({conn.component_id for conn in net.connections}))
+        if len(endpoints) >= 2:
+            bundle_groups.setdefault(endpoints, []).append(net)
+    for endpoints, nets in bundle_groups.items():
+        if len(nets) < 2:
+            continue
+        for rank, net in enumerate(sorted(nets, key=lambda item: item.name)):
+            for conn in net.connections:
+                key = (conn.component_id, conn.pin_id or conn.pin_name)
+                pin_bundle_rank.setdefault(key, (endpoints, rank))
 
     for net in schematic.nets:
-        connected_comp_ids = list({conn.component_id for conn in net.connections})
+        connected_comp_ids = sorted({conn.component_id for conn in net.connections})
         for conn in net.connections:
             key = (conn.component_id, conn.pin_name)
             peers = [cid for cid in connected_comp_ids if cid != conn.component_id]
@@ -88,7 +110,7 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
         pin_peer_y: Dict[str, float] = {}
         if use_geometry:
             for pin in comp_pin_list:
-                pts = pin_peer_pts.get((comp_id, pin.name), [])
+                pts = pin_peer_pts.get((comp_id, pin.id), pin_peer_pts.get((comp_id, pin.name), []))
                 if pts:
                     pin_peer_y[pin.id] = sum(p.y for p in pts) / len(pts)
 
@@ -97,6 +119,8 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
         _sort_side_pins(right_pins, pin_peer_y)
         _sort_side_pins(top_pins, pin_peer_y)
         _sort_side_pins(bottom_pins, pin_peer_y)
+        for side_pins in (left_pins, right_pins, top_pins, bottom_pins):
+            _align_bundle_slots(side_pins, comp_id, pin_bundle_rank)
 
         # Standard symbolic components (resistor, capacitor, switch, fuse, diode, etc.)
         if comp.is_standard:
@@ -284,6 +308,27 @@ def _choose_pin_side(
         return Side.RIGHT
 
     return Side.LEFT
+
+
+def _align_bundle_slots(
+    pins: List[Pin],
+    comp_id: str,
+    bundle_rank: Dict[Tuple[str, str], Tuple[Tuple[str, ...], int]],
+) -> None:
+    """Reorder only bus-member slots, preserving the surrounding pin layout."""
+    grouped: Dict[Tuple[str, ...], List[Tuple[int, Pin, int]]] = {}
+    for index, pin in enumerate(pins):
+        rank_info = bundle_rank.get((comp_id, pin.id)) or bundle_rank.get((comp_id, pin.name))
+        if rank_info:
+            endpoints, rank = rank_info
+            grouped.setdefault(endpoints, []).append((index, pin, rank))
+    for members in grouped.values():
+        if len(members) < 2:
+            continue
+        slots = sorted(index for index, _, _ in members)
+        ordered = [pin for _, pin, _ in sorted(members, key=lambda item: (item[2], item[1].id))]
+        for index, pin in zip(slots, ordered):
+            pins[index] = pin
 
 
 def _sort_side_pins(pins: List[Pin], pin_peer_y: Optional[Dict[str, float]] = None) -> None:

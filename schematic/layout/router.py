@@ -30,7 +30,7 @@ from schematic.models import (
 BEND_PENALTY = 80.0
 STEP_COST = 20.0
 REUSE_COST = 2.0
-CROSSING_PENALTY = 50.0
+CROSSING_PENALTY = 300.0
 PIN_ESCAPE_PENALTY = 60.0
 
 
@@ -127,13 +127,27 @@ class SchematicRouter:
 
         self.bus_guide_edges: Dict[str, Set[Tuple[Tuple[float, float], Tuple[float, float]]]] = {}
 
-        # 4. Sort nets: Bus-grouped point-to-point nets first for parallel alignment, then multi-drop buses and ground rails
+        # 4. Route topology-derived point-to-point bundles first so their paths
+        #    stay parallel, then shared rails, ordinary buses, and returns.
         def net_sort_key(net: Net) -> Tuple[int, str, int, str]:
             nu = net.name.upper()
             is_return = any(p in nu for p in ["GND", "VSS", "NEG"])
             is_multi = len(net.connections) >= 3
             bus_id = self.net_bus.get(net.name, "")
-            prio = 2 if is_return else (1 if is_multi else 0)
+            is_shared_rail = is_multi and (
+                len(net.connections) >= 5
+                or any(p in nu for p in ["GND", "VSS", "NEG", "3V3", "3.3V", "5V", "VCC", "VDD", "VIN", "VBUS", "BAT", "POWER"])
+            )
+            if bus_id:
+                prio = 0
+            elif is_shared_rail and is_return:
+                prio = 3
+            elif is_shared_rail:
+                prio = 1
+            elif is_multi:
+                prio = 2
+            else:
+                prio = 4
             return (prio, bus_id, -len(net.connections), net.name)
 
         sorted_nets = sorted(self.schematic.nets, key=net_sort_key)
@@ -143,6 +157,15 @@ class SchematicRouter:
             net.color = color
 
             pins = self._get_net_pin_positions(net)
+            if len(pins) == 1 and len(net.connections) >= 2:
+                # Two components may share a terminal coordinate when a
+                # series part exactly replaces the intervening wire. Preserve
+                # this as an explicit zero-length connection so downstream
+                # consumers can distinguish a direct contact from an unrouted
+                # net; it renders invisibly at the already touching terminals.
+                point = Point(pins[0][0], pins[0][1])
+                self.segments.append(WireSegment(point, point, net.name, color))
+                continue
             if len(pins) < 2:
                 continue
 
@@ -293,7 +316,7 @@ class SchematicRouter:
                 v_occs = self.node_occupants.get(v)
                 if v_occs and net_name not in v_occs:
                     if bus_id and any(getattr(self, "net_bus", {}).get(o) == bus_id for o in v_occs):
-                        step_cost += 200.0
+                        step_cost += 600.0
                     else:
                         step_cost += CROSSING_PENALTY
 

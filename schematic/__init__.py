@@ -19,10 +19,9 @@ from schematic.renderer.svg import render_schematic_to_svg
 
 
 def process_schematic(text: str) -> Schematic:
-    """Parses text DSL / YAML, performs 2D placement, and routes all nets."""
+    """Parses and jointly optimizes component placement and net routing."""
     schematic = parse_schematic(text)
     place_schematic(schematic)
-    route_schematic(schematic)
     return schematic
 
 

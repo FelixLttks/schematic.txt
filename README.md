@@ -8,8 +8,9 @@ Ein modulares, textbasiertes CAD/Schaltplan-Werkzeug zur Beschreibung von elektr
 
 - **Textbasiertes Format (Git-tauglich)**: Reiner Text (DSL oder YAML). Einfach zu versionieren, per Diff nachvollziehbar und konfliktarm zu mergen.
 - **Verbindungen beschreiben, nicht zeichnen**: Einfache Schreibweise wie `ESP32.GND -> Sensor.GND, OLED.GND`. Pins und Komponenten werden bei Bedarf automatisch inferiert.
-- **Automatisches 2D-Placement**: Kein manuelles Positionieren von X/Y-Koordinaten nötig. Erkennt Hubs (z. B. Microcontroller wie ESP32) und Peripheriegeräte (Sensoren, Displays, Module) und ordnet sie im 2D-Raum an.
-- **Echte 2D-Verdrahtung (kein WireViz 1D-Kabelbaum)**: Orthogonales Manhattan-Routing mit Bus-Trunks (z. B. I2C SDA/SCL, SPI, Power-Rails) und automatischen Abzweig-Junction-Dots (`●`).
+- **Routenbewusstes 2D-Placement**: Mehrere topologische Startlayouts werden auf dem Raster verglichen und durch echte Neuroutings verbessert. Leitungslänge, Knicke, Kreuzungen, Bauteilabstände und benötigter Platz fließen gemeinsam in die Bewertung ein.
+- **Bauteile als Teil des Verbindungspfads**: Serienbauteile wie Sicherungen und Schalter werden aus der Netzstruktur erkannt und direkt in die Verbindung zum Ziel gesetzt, statt eine eigene Layoutspalte zu belegen.
+- **Echte 2D-Verdrahtung (kein WireViz 1D-Kabelbaum)**: Orthogonales Manhattan-Routing mit automatisch aus gemeinsamen Endpunkten abgeleiteten Parallelbündeln und Abzweig-Junction-Dots (`●`).
 - **Minimalistisches PoC Web-Interface**: 50/50 Split-Screen (links Editor mit Zeilennummern, rechts 2D-SVG-Vorschau mit Pan & Zoom sowie Live-Fehleranzeige). Kein Header-Bloat, keine Farbverläufe, purer Fokus.
 - **Modulare Clean-Architecture**: Vollständige Trennung von Core-Logik (`schematic/`) und Web-App (`web/`).
 
