@@ -103,11 +103,163 @@ class SvgRenderer:
         # Layer 3: Components
         svg.append('<g id="schematic-components">')
         for comp in self.schematic.components.values():
-            svg.append(self._render_component(comp, comp_bg, comp_border, comp_header_bg, text_title, text_subtitle, text_pin, pin_lead_color, terminal_circle))
+            if comp.is_standard:
+                svg.append(self._render_standard_component(comp, comp_bg, comp_border, text_title, pin_lead_color, terminal_circle))
+            else:
+                svg.append(self._render_component(comp, comp_bg, comp_border, comp_header_bg, text_title, text_subtitle, text_pin, pin_lead_color, terminal_circle))
         svg.append('</g>')
 
         svg.append('</svg>')
         return "\n".join(svg)
+
+    def _render_standard_component(
+        self,
+        comp: Component,
+        comp_bg: str,
+        comp_border: str,
+        text_title: str,
+        pin_lead_color: str,
+        terminal_circle: str,
+    ) -> str:
+        parts = []
+        k = comp.kind.lower() if comp.kind else "resistor"
+        parts.append(f'<g id="comp-{comp.id}" class="component-standard component-{k}" transform="translate(0, 0)">')
+
+        symbol_stroke = "#cbd5e1" if self.dark_theme else "#334155"
+        box_stroke = "#94a3b8" if self.dark_theme else "#475569"
+        text_val_color = "#38bdf8" if self.dark_theme else "#0284c7"
+
+        escaped_id = html.escape(comp.id)
+        escaped_val = html.escape(comp.value) if comp.value else ""
+
+        is_vertical = comp.height > comp.width
+        cx = comp.x + comp.width / 2.0
+        cy = comp.y + comp.height / 2.0
+
+        if k == "resistor":
+            if is_vertical:
+                parts.append(f'<line x1="{cx:.1f}" y1="{comp.y:.1f}" x2="{cx:.1f}" y2="{cy - 20.0:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{cx:.1f}" y1="{cy + 20.0:.1f}" x2="{cx:.1f}" y2="{comp.y + comp.height:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<rect x="{cx - 8.0:.1f}" y="{cy - 20.0:.1f}" width="16.0" height="40.0" rx="2" ry="2" fill="{comp_bg}" stroke="{box_stroke}" stroke-width="1.8" />')
+                parts.append(f'<text x="{cx + 12.0:.1f}" y="{cy - 4.0:.1f}" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+                if escaped_val:
+                    parts.append(f'<text x="{cx + 12.0:.1f}" y="{cy + 10.0:.1f}" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+            else:
+                parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{cx - 20.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{cx + 20.0:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<rect x="{cx - 20.0:.1f}" y="{cy - 8.0:.1f}" width="40.0" height="16.0" rx="2" ry="2" fill="{comp_bg}" stroke="{box_stroke}" stroke-width="1.8" />')
+                parts.append(f'<text x="{cx:.1f}" y="{comp.y + 7.0:.1f}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+                if escaped_val:
+                    if len(escaped_val) <= 6:
+                        parts.append(f'<text x="{cx:.1f}" y="{cy + 3.2:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+                    else:
+                        parts.append(f'<text x="{cx:.1f}" y="{comp.y + 36.0:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+
+        elif k == "capacitor":
+            if is_vertical:
+                parts.append(f'<line x1="{cx:.1f}" y1="{comp.y:.1f}" x2="{cx:.1f}" y2="{cy - 4.0:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{cx:.1f}" y1="{cy + 4.0:.1f}" x2="{cx:.1f}" y2="{comp.y + comp.height:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{cx - 12.0:.1f}" y1="{cy - 4.0:.1f}" x2="{cx + 12.0:.1f}" y2="{cy - 4.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.4" stroke-linecap="round" />')
+                parts.append(f'<line x1="{cx - 12.0:.1f}" y1="{cy + 4.0:.1f}" x2="{cx + 12.0:.1f}" y2="{cy + 4.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.4" stroke-linecap="round" />')
+                parts.append(f'<text x="{cx + 16.0:.1f}" y="{cy - 3.0:.1f}" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+                if escaped_val:
+                    parts.append(f'<text x="{cx + 16.0:.1f}" y="{cy + 10.0:.1f}" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+            else:
+                parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{cx - 4.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{cx + 4.0:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{cx - 4.0:.1f}" y1="{cy - 12.0:.1f}" x2="{cx - 4.0:.1f}" y2="{cy + 12.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.4" stroke-linecap="round" />')
+                parts.append(f'<line x1="{cx + 4.0:.1f}" y1="{cy - 12.0:.1f}" x2="{cx + 4.0:.1f}" y2="{cy + 12.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.4" stroke-linecap="round" />')
+                parts.append(f'<text x="{cx:.1f}" y="{comp.y + 5.0:.1f}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+                if escaped_val:
+                    parts.append(f'<text x="{cx:.1f}" y="{comp.y + 36.0:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+
+        elif k == "switch":
+            parts.append(f'<text x="{cx:.1f}" y="{comp.y - 6.0:.1f}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+            if escaped_val:
+                parts.append(f'<text x="{cx:.1f}" y="{comp.y + comp.height + 15.0:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+
+            lp = [p for p in comp.pins.values() if p.side == Side.LEFT]
+            rp = [p for p in comp.pins.values() if p.side == Side.RIGHT]
+
+            if len(comp.pins) == 3:
+                if len(lp) == 1 and len(rp) >= 2:
+                    # Common on Left, Throws on Right
+                    parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{comp.x + 18.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<circle cx="{comp.x + 18.0:.1f}" cy="{cy:.1f}" r="2.4" fill="{symbol_stroke}" />')
+                    parts.append(f'<circle cx="{comp.x + 42.0:.1f}" cy="{comp.y:.1f}" r="2.2" fill="none" stroke="{symbol_stroke}" stroke-width="1.6" />')
+                    parts.append(f'<line x1="{comp.x + 44.2:.1f}" y1="{comp.y:.1f}" x2="{comp.x + comp.width:.1f}" y2="{comp.y:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<circle cx="{comp.x + 42.0:.1f}" cy="{comp.y + comp.height:.1f}" r="2.2" fill="none" stroke="{symbol_stroke}" stroke-width="1.6" />')
+                    parts.append(f'<line x1="{comp.x + 44.2:.1f}" y1="{comp.y + comp.height:.1f}" x2="{comp.x + comp.width:.1f}" y2="{comp.y + comp.height:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<line x1="{comp.x + 18.0:.1f}" y1="{cy:.1f}" x2="{comp.x + 40.0:.1f}" y2="{comp.y + 2.5:.1f}" stroke="{symbol_stroke}" stroke-width="2.2" stroke-linecap="round" />')
+                    if lp[0].display_name:
+                        parts.append(f'<text x="{comp.x + 4.0:.1f}" y="{cy - 5.0:.1f}" text-anchor="start" font-family="ui-monospace, monospace" font-size="8" font-weight="600" fill="{text_val_color}">{html.escape(lp[0].display_name)}</text>')
+                    if rp[0].display_name:
+                        parts.append(f'<text x="{comp.x + comp.width - 4.0:.1f}" y="{comp.y - 4.0:.1f}" text-anchor="end" font-family="ui-monospace, monospace" font-size="8" font-weight="600" fill="{text_val_color}">{html.escape(rp[0].display_name)}</text>')
+                    if len(rp) > 1 and rp[1].display_name:
+                        parts.append(f'<text x="{comp.x + comp.width - 4.0:.1f}" y="{comp.y + comp.height + 10.0:.1f}" text-anchor="end" font-family="ui-monospace, monospace" font-size="8" font-weight="600" fill="{text_val_color}">{html.escape(rp[1].display_name)}</text>')
+                elif len(rp) == 1 and len(lp) >= 2:
+                    # Common on Right, Throws on Left
+                    parts.append(f'<line x1="{comp.x + comp.width - 18.0:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<circle cx="{comp.x + comp.width - 18.0:.1f}" cy="{cy:.1f}" r="2.4" fill="{symbol_stroke}" />')
+                    parts.append(f'<circle cx="{comp.x + 18.0:.1f}" cy="{comp.y:.1f}" r="2.2" fill="none" stroke="{symbol_stroke}" stroke-width="1.6" />')
+                    parts.append(f'<line x1="{comp.x:.1f}" y1="{comp.y:.1f}" x2="{comp.x + 15.8:.1f}" y2="{comp.y:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<circle cx="{comp.x + 18.0:.1f}" cy="{comp.y + comp.height:.1f}" r="2.2" fill="none" stroke="{symbol_stroke}" stroke-width="1.6" />')
+                    parts.append(f'<line x1="{comp.x:.1f}" y1="{comp.y + comp.height:.1f}" x2="{comp.x + 15.8:.1f}" y2="{comp.y + comp.height:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<line x1="{comp.x + comp.width - 18.0:.1f}" y1="{cy:.1f}" x2="{comp.x + 20.0:.1f}" y2="{comp.y + 2.5:.1f}" stroke="{symbol_stroke}" stroke-width="2.2" stroke-linecap="round" />')
+                    if rp[0].display_name:
+                        parts.append(f'<text x="{comp.x + comp.width - 4.0:.1f}" y="{cy - 5.0:.1f}" text-anchor="end" font-family="ui-monospace, monospace" font-size="8" font-weight="600" fill="{text_val_color}">{html.escape(rp[0].display_name)}</text>')
+                    if lp[0].display_name:
+                        parts.append(f'<text x="{comp.x + 4.0:.1f}" y="{comp.y - 4.0:.1f}" text-anchor="start" font-family="ui-monospace, monospace" font-size="8" font-weight="600" fill="{text_val_color}">{html.escape(lp[0].display_name)}</text>')
+                    if len(lp) > 1 and lp[1].display_name:
+                        parts.append(f'<text x="{comp.x + 4.0:.1f}" y="{comp.y + comp.height + 10.0:.1f}" text-anchor="start" font-family="ui-monospace, monospace" font-size="8" font-weight="600" fill="{text_val_color}">{html.escape(lp[1].display_name)}</text>')
+                else:
+                    parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{comp.x + 18.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<circle cx="{comp.x + 18.0:.1f}" cy="{cy:.1f}" r="2.4" fill="{symbol_stroke}" />')
+                    parts.append(f'<circle cx="{comp.x + 42.0:.1f}" cy="{cy:.1f}" r="2.2" fill="none" stroke="{symbol_stroke}" stroke-width="1.6" />')
+                    parts.append(f'<line x1="{comp.x + 44.2:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                    parts.append(f'<line x1="{comp.x + 18.0:.1f}" y1="{cy:.1f}" x2="{comp.x + 39.0:.1f}" y2="{cy - 10.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.2" stroke-linecap="round" />')
+            else:
+                parts.append(f'<circle cx="{comp.x + 20.0:.1f}" cy="{cy:.1f}" r="2.4" fill="{symbol_stroke}" />')
+                parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{comp.x + 20.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<circle cx="{comp.x + 42.0:.1f}" cy="{cy:.1f}" r="2.2" fill="none" stroke="{symbol_stroke}" stroke-width="1.6" />')
+                parts.append(f'<line x1="{comp.x + 44.2:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+                parts.append(f'<line x1="{comp.x + 20.0:.1f}" y1="{cy:.1f}" x2="{comp.x + 39.0:.1f}" y2="{cy - 11.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.2" stroke-linecap="round" />')
+
+        elif k == "fuse":
+            parts.append(f'<rect x="{cx - 20.0:.1f}" y="{cy - 8.0:.1f}" width="40.0" height="16.0" rx="1" ry="1" fill="{comp_bg}" stroke="{box_stroke}" stroke-width="1.8" />')
+            parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<text x="{cx:.1f}" y="{comp.y + 7.0:.1f}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+            if escaped_val:
+                parts.append(f'<text x="{cx:.1f}" y="{comp.y + 36.0:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+
+        elif k in ("diode", "led"):
+            parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{cx - 10.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<line x1="{cx + 8.0:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<polygon points="{cx - 10.0:.1f},{cy - 9.0:.1f} {cx - 10.0:.1f},{cy + 9.0:.1f} {cx + 8.0:.1f},{cy:.1f}" fill="{comp_bg}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<line x1="{cx + 8.0:.1f}" y1="{cy - 9.0:.1f}" x2="{cx + 8.0:.1f}" y2="{cy + 9.0:.1f}" stroke="{symbol_stroke}" stroke-width="2.0" stroke-linecap="round" />')
+            if k == "led":
+                parts.append(f'<line x1="{cx - 2.0:.1f}" y1="{cy - 10.0:.1f}" x2="{cx + 4.0:.1f}" y2="{cy - 16.0:.1f}" stroke="{symbol_stroke}" stroke-width="1.4" />')
+                parts.append(f'<polygon points="{cx + 4.0:.1f},{cy - 16.0:.1f} {cx + 1.0:.1f},{cy - 14.5:.1f} {cx + 2.5:.1f},{cy - 13.0:.1f}" fill="{symbol_stroke}" />')
+                parts.append(f'<line x1="{cx + 4.0:.1f}" y1="{cy - 10.0:.1f}" x2="{cx + 10.0:.1f}" y2="{cy - 16.0:.1f}" stroke="{symbol_stroke}" stroke-width="1.4" />')
+                parts.append(f'<polygon points="{cx + 10.0:.1f},{cy - 16.0:.1f} {cx + 7.0:.1f},{cy - 14.5:.1f} {cx + 8.5:.1f},{cy - 13.0:.1f}" fill="{symbol_stroke}" />')
+            parts.append(f'<text x="{cx:.1f}" y="{comp.y + 6.0:.1f}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+            if escaped_val:
+                parts.append(f'<text x="{cx:.1f}" y="{comp.y + 36.0:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+
+        elif k == "inductor":
+            parts.append(f'<line x1="{comp.x:.1f}" y1="{cy:.1f}" x2="{cx - 18.0:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<line x1="{cx + 18.0:.1f}" y1="{cy:.1f}" x2="{comp.x + comp.width:.1f}" y2="{cy:.1f}" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<path d="M {cx - 18.0:.1f},{cy:.1f} a 6,6 0 0,1 12,0 a 6,6 0 0,1 12,0 a 6,6 0 0,1 12,0" fill="none" stroke="{symbol_stroke}" stroke-width="1.8" />')
+            parts.append(f'<text x="{cx:.1f}" y="{comp.y + 6.0:.1f}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="{text_title}">{escaped_id}</text>')
+            if escaped_val:
+                parts.append(f'<text x="{cx:.1f}" y="{comp.y + 36.0:.1f}" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" font-weight="600" fill="{text_val_color}">{escaped_val}</text>')
+
+        # Pin terminals circles
+        for pin in comp.pins.values():
+            parts.append(f'<circle cx="{pin.position.x:.1f}" cy="{pin.position.y:.1f}" r="2.2" fill="{terminal_circle}" />')
+
+        parts.append('</g>')
+        return "\n".join(parts)
 
     def _render_component(
         self,

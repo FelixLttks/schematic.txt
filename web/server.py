@@ -79,7 +79,24 @@ class SchematicHandler(BaseHTTPRequestHandler):
             code = req.get("code", "")
             dark_theme = req.get("dark_theme", True)
 
-            svg = generate_schematic_svg(code, dark_theme=dark_theme)
+            # Hot-reload schematic modules so edits take effect immediately
+            import importlib
+            import schematic
+            import schematic.models
+            import schematic.parser
+            import schematic.layout.pin_allocator
+            import schematic.layout.placer
+            import schematic.layout.router
+            import schematic.renderer.svg
+            importlib.reload(schematic.models)
+            importlib.reload(schematic.parser)
+            importlib.reload(schematic.layout.pin_allocator)
+            importlib.reload(schematic.layout.placer)
+            importlib.reload(schematic.layout.router)
+            importlib.reload(schematic.renderer.svg)
+            importlib.reload(schematic)
+
+            svg = schematic.generate_schematic_svg(code, dark_theme=dark_theme)
             self._send_json({"status": "ok", "svg": svg})
         except ParseError as exc:
             self._send_json(

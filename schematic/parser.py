@@ -5,7 +5,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 import yaml
 
-from schematic.models import Component, Net, NetConnection, Pin, Schematic, Side
+from schematic.models import Component, Net, NetConnection, Pin, Schematic, Side, normalize_kind
 
 
 class ParseError(Exception):
@@ -135,6 +135,18 @@ class SchematicParser:
                 comp = self.schematic.get_or_create_component(str(comp_id))
                 if isinstance(comp_info, dict):
                     comp.type_name = str(comp_info.get("type", comp_info.get("name", "")))
+                    if "kind" in comp_info:
+                        comp.set_kind(str(comp_info["kind"]))
+                    elif "symbol" in comp_info:
+                        comp.set_kind(str(comp_info["symbol"]))
+                    elif "standard" in comp_info:
+                        comp.set_kind(str(comp_info["standard"]))
+                    if "value" in comp_info:
+                        comp.value = str(comp_info["value"])
+                    elif "val" in comp_info:
+                        comp.value = str(comp_info["val"])
+                    comp.detect_standard_type()
+
                     for side_str, side_enum in [("left", Side.LEFT), ("right", Side.RIGHT), ("top", Side.TOP), ("bottom", Side.BOTTOM)]:
                         raw_pins = comp_info.get(side_str) or comp_info.get(f"{side_str}_pins")
                         if raw_pins:
@@ -156,6 +168,7 @@ class SchematicParser:
                         self._parse_side_pins(comp, pins_val, Side.LEFT, side_specified=False)
                 elif isinstance(comp_info, str):
                     comp.type_name = comp_info
+                    comp.detect_standard_type()
 
         # 2. Parse connections / nets
         connections_data = data.get("connections", [])
@@ -242,6 +255,31 @@ class SchematicParser:
                 self._parse_side_pins(current_comp, pins_text, Side.LEFT, side_specified=False)
                 continue
 
+            # Check for kind / symbol / standard declaration:
+            # Examples:
+            #   kind: resistor
+            #   symbol: capacitor
+            #   standard: switch
+            #   standard: true
+            kind_match = re.match(r"^(?:kind|symbol|standard)\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if kind_match:
+                if current_comp is None:
+                    raise ParseError(f"'{line}' defined without a preceding component declaration", line_idx, raw_line)
+                k_val = kind_match.group(1).strip()
+                current_comp.set_kind(k_val)
+                continue
+
+            # Check for value declaration:
+            # Examples:
+            #   value: 2kOhm
+            #   val: 100nF
+            val_match = re.match(r"^(?:value|val)\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if val_match:
+                if current_comp is None:
+                    raise ParseError(f"'{line}' defined without a preceding component declaration", line_idx, raw_line)
+                current_comp.value = val_match.group(1).strip()
+                continue
+
             # Check for "net <name>: Comp1.Pin1, Comp2.Pin2..."
             net_match = re.match(r"^net\s+([\w\-\.]+)\s*:\s*(.+)$", line, re.IGNORECASE)
             if net_match:
@@ -260,11 +298,22 @@ class SchematicParser:
                 continue
 
             # Component header: "ESP32: ESP32-WROOM" or "[ESP32: ESP32-WROOM]" or "ESP32:"
-            comp_match = re.match(r"^\[?\s*([A-Za-z0-9_\-]+)\s*(?::\s*([^\]]*))?\]?$", line)
+            # Also supports inline attributes e.g. "SpeedPullUp [kind=resistor, value=2kOhm]:" or "SpeedPullUp: 2kOhm [resistor]"
+            comp_match = re.match(r"^\[?\s*([A-Za-z0-9_\-]+)\s*(?:\[([^\]]*)\])?\s*(?::\s*([^\]]*))?\]?$", line)
             if comp_match:
                 comp_id = comp_match.group(1).strip()
-                type_name = (comp_match.group(2) or "").strip().rstrip("]")
+                bracket_attrs = comp_match.group(2)
+                type_name = (comp_match.group(3) or "").strip().rstrip("]")
                 current_comp = self.schematic.get_or_create_component(comp_id, type_name)
+                if bracket_attrs:
+                    self._parse_inline_comp_attrs(current_comp, bracket_attrs)
+                if "[" in type_name and type_name.endswith("]"):
+                    b_start = type_name.rfind("[")
+                    inline_b = type_name[b_start + 1:-1]
+                    type_name = type_name[:b_start].strip()
+                    current_comp.type_name = type_name
+                    self._parse_inline_comp_attrs(current_comp, inline_b)
+                current_comp.detect_standard_type()
                 continue
 
             # If line has dots, perhaps user forgot the arrow, e.g. "ESP32.GND SDCard.GND"
@@ -273,6 +322,25 @@ class SchematicParser:
                 line_num=line_idx,
                 line_content=raw_line,
             )
+
+    def _parse_inline_comp_attrs(self, comp: Component, attrs_str: str) -> None:
+        """Parses inline component attributes e.g. 'kind=resistor, value=2kOhm' or 'resistor, 2kOhm'."""
+        parts = [p.strip() for p in attrs_str.split(",") if p.strip()]
+        for p in parts:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                k = k.strip().lower()
+                v = v.strip().strip("\"'")
+                if k in ("kind", "symbol", "standard"):
+                    comp.set_kind(v)
+                elif k in ("value", "val"):
+                    comp.value = v
+            else:
+                norm = normalize_kind(p)
+                if norm:
+                    comp.set_kind(norm)
+                elif not comp.value:
+                    comp.value = p.strip("\"'")
 
     def _parse_dsl_connection_line(self, line: str, line_num: int, line_content: Optional[str] = None) -> None:
         """

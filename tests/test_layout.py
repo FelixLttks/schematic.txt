@@ -263,6 +263,50 @@ class TestLayoutAndRouting(unittest.TestCase):
             for node, nets in crossing_nodes.items():
                 self.assertNotIn(node, net_bends, f"A net bends at crossing node {node} in {f}!")
 
+    def test_standard_components_layout_and_routing(self):
+        text = """
+        ESP32: ESP32-C3
+          pins: 3V3, GND, GPIO0
+
+        PullUp: resistor 2kOhm
+          pins: 1, 2
+
+        FilterCap: 100nF Capacitor
+          pins: 1, 2
+
+        PowerSwitch: Slide Switch (SPDT)
+          pins: 1, 2, 3
+
+        Fuse: Inline Fuse
+          pins: IN, OUT
+
+        ESP32.3V3 -> PullUp.1
+        PullUp.2 -> ESP32.GPIO0, FilterCap.1
+        FilterCap.2 -> ESP32.GND
+        PowerSwitch.1 -> Fuse.IN
+        Fuse.OUT -> ESP32.3V3
+        """
+        sch = process_schematic(text)
+
+        # Check standard sizing (60x40 for resistor/switch/fuse, 40x40 for capacitor)
+        self.assertEqual(sch.components["PullUp"].width, 60.0)
+        self.assertEqual(sch.components["PullUp"].height, 40.0)
+        self.assertEqual(sch.components["FilterCap"].width, 40.0)
+        self.assertEqual(sch.components["FilterCap"].height, 40.0)
+        self.assertEqual(sch.components["PowerSwitch"].width, 60.0)
+        self.assertEqual(sch.components["PowerSwitch"].height, 40.0)
+        self.assertEqual(sch.components["Fuse"].width, 60.0)
+        self.assertEqual(sch.components["Fuse"].height, 40.0)
+
+        # Check wires connect properly
+        self.assertGreater(len(sch.wires), 0)
+
+        # Check grid alignment for all pin positions
+        for c in sch.components.values():
+            for p in c.pins.values():
+                self.assertEqual(p.position.x % 20.0, 0.0)
+                self.assertEqual(p.position.y % 20.0, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

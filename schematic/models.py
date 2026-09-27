@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import math
+import re
 from typing import Dict, List, Optional, Tuple
 
 
@@ -114,6 +115,38 @@ class Pin:
         return self.name
 
 
+STANDARD_KINDS = {"resistor", "capacitor", "switch", "fuse", "diode", "led", "inductor"}
+
+KIND_SYNONYMS = {
+    "resistor": "resistor",
+    "res": "resistor",
+    "r": "resistor",
+    "widerstand": "resistor",
+    "capacitor": "capacitor",
+    "cap": "capacitor",
+    "c": "capacitor",
+    "kondensator": "capacitor",
+    "switch": "switch",
+    "sw": "switch",
+    "schalter": "switch",
+    "fuse": "fuse",
+    "sicherung": "fuse",
+    "diode": "diode",
+    "d": "diode",
+    "led": "led",
+    "inductor": "inductor",
+    "ind": "inductor",
+    "l": "inductor",
+    "spule": "inductor",
+    "drossel": "inductor",
+}
+
+
+def normalize_kind(val: str) -> Optional[str]:
+    v = val.strip().lower()
+    return KIND_SYNONYMS.get(v)
+
+
 @dataclass
 class Component:
     id: str
@@ -123,6 +156,92 @@ class Component:
     y: float = 0.0
     width: float = 140.0
     height: float = 80.0
+    kind: str = ""
+    value: str = ""
+
+    def __post_init__(self):
+        if not self.kind and self.type_name:
+            self.detect_standard_type()
+
+    @property
+    def is_standard(self) -> bool:
+        return bool(self.kind and self.kind in STANDARD_KINDS)
+
+    def set_kind(self, kind_str: str) -> None:
+        raw = kind_str.strip().lower()
+        if raw in ("false", "none", "no", "box", "ic", "module"):
+            self.kind = ""
+            return
+        if raw in ("true", "yes", "standard"):
+            # Try to detect from type_name or default to resistor if unspecified
+            if not self.kind and self.type_name:
+                self.detect_standard_type()
+            if not self.kind:
+                self.kind = "resistor"
+            return
+        norm = normalize_kind(raw)
+        self.kind = norm if norm else raw
+        if not self.value and self.type_name:
+            t = self.type_name.strip()
+            if t.lower() not in KIND_SYNONYMS and t.lower() not in STANDARD_KINDS:
+                self.value = t
+
+    def detect_standard_type(self) -> None:
+        if self.kind:
+            return
+        t = self.type_name.strip()
+        if not t:
+            return
+
+        # Do not match multi-pin ICs, controllers, monitors, adapters, converters
+        skip_words = {
+            "ic", "controller", "monitor", "adapter", "module", "board",
+            "shield", "sensor", "display", "step-down", "battery", "supply", "converter"
+        }
+        t_lower = t.lower()
+        t_words = set(re.findall(r"[a-z0-9_\-]+", t_lower))
+        if any(sw in t_words for sw in skip_words):
+            return
+
+        # 1. Matches "Kind(Value)" e.g. "Resistor(2kOhm)" or "res(10k)"
+        m = re.match(r"^([A-Za-z]+)\s*\((.*?)\)$", t)
+        if m:
+            k = normalize_kind(m.group(1))
+            if k:
+                self.kind = k
+                if not self.value:
+                    self.value = m.group(2).strip()
+                return
+
+        # 2. Matches "Kind Value" e.g. "Resistor 2kOhm" or "Switch SPDT"
+        m = re.match(r"^([A-Za-z]+)\s+([A-Za-z0-9_\-\.\/]+.*)$", t)
+        if m:
+            k = normalize_kind(m.group(1))
+            if k:
+                self.kind = k
+                if not self.value:
+                    self.value = m.group(2).strip()
+                return
+
+        # 3. Matches "Value Kind" e.g. "2kOhm Resistor", "100nF Capacitor", "Inline Fuse", "Slide Switch (SPDT)"
+        m = re.match(r"^(.*?)\s+([A-Za-z]+)(?:\s*\((.*?)\))?$", t)
+        if m:
+            k = normalize_kind(m.group(2))
+            if k:
+                self.kind = k
+                if not self.value:
+                    sub_val = m.group(3)
+                    prefix_val = m.group(1).strip()
+                    if sub_val:
+                        self.value = sub_val.strip()
+                    elif prefix_val:
+                        self.value = prefix_val
+                return
+
+        # 4. Single word standard kind e.g. "Resistor" or "Capacitor"
+        k = normalize_kind(t)
+        if k:
+            self.kind = k
 
     @property
     def rect(self) -> Rect:
@@ -259,4 +378,5 @@ class Schematic:
             self.components[comp_id] = Component(id=comp_id, type_name=type_name)
         elif type_name and not self.components[comp_id].type_name:
             self.components[comp_id].type_name = type_name
+            self.components[comp_id].detect_standard_type()
         return self.components[comp_id]

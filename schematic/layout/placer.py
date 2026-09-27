@@ -72,7 +72,9 @@ class SchematicPlacer:
                         directed_adj[src_cid].add(tgt_cid)
 
         # 3. Identify central Hub component (e.g. microcontroller)
-        hub = max(comps, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
+        non_standard = [c for c in comps if not c.is_standard]
+        candidate_hubs = non_standard if non_standard else comps
+        hub = max(candidate_hubs, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
 
         # 4. Determine side relative to Hub for all components
         comp_side: Dict[str, Side] = {hub.id: Side.LEFT}

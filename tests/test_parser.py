@@ -114,5 +114,81 @@ class TestParser(unittest.TestCase):
         self.assertEqual(len(esp.get_pins_by_name("GND")), 2)
 
 
+    def test_standard_components_parsing_dsl(self):
+        code = """
+        R1: resistor 2kOhm
+          pins: 1, 2
+
+        R2: 10k
+          kind: resistor
+          pins: 1, 2
+
+        R3: Resistor
+          value: 4.7k
+          pins: 1, 2
+
+        C1: 100nF Capacitor
+          pins: 1, 2
+
+        SW1: Slide Switch (SPDT)
+          pins: 1, 2, 3
+
+        F1: Inline Fuse
+          pins: IN, OUT
+
+        R4 [kind=resistor, value=100R]:
+          pins: 1, 2
+        """
+        sch = parse_schematic(code)
+        self.assertTrue(sch.components["R1"].is_standard)
+        self.assertEqual(sch.components["R1"].kind, "resistor")
+        self.assertEqual(sch.components["R1"].value, "2kOhm")
+
+        self.assertTrue(sch.components["R2"].is_standard)
+        self.assertEqual(sch.components["R2"].kind, "resistor")
+        self.assertEqual(sch.components["R2"].value, "10k")
+
+        self.assertTrue(sch.components["R3"].is_standard)
+        self.assertEqual(sch.components["R3"].kind, "resistor")
+        self.assertEqual(sch.components["R3"].value, "4.7k")
+
+        self.assertTrue(sch.components["C1"].is_standard)
+        self.assertEqual(sch.components["C1"].kind, "capacitor")
+        self.assertEqual(sch.components["C1"].value, "100nF")
+
+        self.assertTrue(sch.components["SW1"].is_standard)
+        self.assertEqual(sch.components["SW1"].kind, "switch")
+        self.assertEqual(sch.components["SW1"].value, "SPDT")
+
+        self.assertTrue(sch.components["F1"].is_standard)
+        self.assertEqual(sch.components["F1"].kind, "fuse")
+        self.assertEqual(sch.components["F1"].value, "Inline")
+
+        self.assertTrue(sch.components["R4"].is_standard)
+        self.assertEqual(sch.components["R4"].kind, "resistor")
+        self.assertEqual(sch.components["R4"].value, "100R")
+
+    def test_standard_components_parsing_yaml(self):
+        yaml_code = """
+        components:
+          SpeedPullUp:
+            kind: resistor
+            value: 2kOhm
+            pins: [1, 2]
+          SpeedCap:
+            symbol: capacitor
+            value: 100nF
+            pins: [1, 2]
+        """
+        sch = parse_schematic(yaml_code)
+        self.assertTrue(sch.components["SpeedPullUp"].is_standard)
+        self.assertEqual(sch.components["SpeedPullUp"].kind, "resistor")
+        self.assertEqual(sch.components["SpeedPullUp"].value, "2kOhm")
+
+        self.assertTrue(sch.components["SpeedCap"].is_standard)
+        self.assertEqual(sch.components["SpeedCap"].kind, "capacitor")
+        self.assertEqual(sch.components["SpeedCap"].value, "100nF")
+
+
 if __name__ == "__main__":
     unittest.main()

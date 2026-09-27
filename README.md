@@ -74,6 +74,47 @@ ESP32.GPIO22 -> BME280.SCL, OLED.SCK, MPU6050.SCL : I2C_SCL
 ESP32.GPIO4 -> MPU6050.INT : SENSOR_INT
 ```
 
+### Standardbauteile (Diskrete Symbole statt großer IC-Cards)
+Kompakte passive und diskrete Standard-Elemente wie Widerstände, Kondensatoren, Schalter, Sicherungen, Dioden und LEDs werden automatisch als schlanke 2D-Schaltsymbole gerendert (60x40px bzw. 40x40px) statt als große IC-Karten:
+
+```text
+# 1. Inline mit Typ und Wert:
+SpeedPullUp: resistor 2kOhm
+  pins: 1, 2
+
+FilterCap: capacitor 100nF
+  pins: 1, 2
+
+PowerSwitch: switch SPDT
+  pins: 1, 2, 3
+
+Fuse: fuse Inline
+  pins: IN, OUT
+
+# 2. Mit expliziten Eigenschaften (kind / symbol & value):
+SpeedPullUp: 2kOhm
+  kind: resistor      # oder symbol: resistor / standard: resistor
+  pins: 1, 2
+
+FilterCap:
+  kind: capacitor
+  value: 100nF
+  pins: 1, 2
+
+# 3. Automatische Erkennung aus natürlicher Bezeichnung (wie in example_large.txt):
+SpeedPullUp: 2kOhm Resistor
+  pins: 1, 2
+
+SpeedCap: 100nF Capacitor
+  pins: 1, 2
+
+PowerSwitch: Slide Switch (SPDT)
+  pins: 1, 2, 3
+
+Fuse: Inline Fuse
+  pins: IN, OUT
+```
+
 ### YAML-Format (alternativ)
 ```yaml
 components:

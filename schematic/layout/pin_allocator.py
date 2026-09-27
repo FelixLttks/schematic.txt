@@ -55,6 +55,17 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
                     top_pins.append(pin)
                 else:
                     bottom_pins.append(pin)
+        elif comp.kind == "switch" and len(comp_pin_list) == 3 and all(not p.side_specified for p in comp_pin_list):
+            _assign_3pin_switch_sides(comp, comp_pin_list, pin_peer_map, schematic.components, use_geometry)
+            for pin in comp_pin_list:
+                if pin.side == Side.LEFT:
+                    left_pins.append(pin)
+                elif pin.side == Side.RIGHT:
+                    right_pins.append(pin)
+                elif pin.side == Side.TOP:
+                    top_pins.append(pin)
+                else:
+                    bottom_pins.append(pin)
         else:
             for pin in comp_pin_list:
                 if pin.side_specified:
@@ -86,6 +97,18 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
         _sort_side_pins(right_pins, pin_peer_y)
         _sort_side_pins(top_pins, pin_peer_y)
         _sort_side_pins(bottom_pins, pin_peer_y)
+
+        # Standard symbolic components (resistor, capacitor, switch, fuse, diode, etc.)
+        if comp.is_standard:
+            is_vert = (len(top_pins) + len(bottom_pins)) > (len(left_pins) + len(right_pins))
+            if is_vert:
+                comp.width = 40.0
+                comp.height = 40.0 if comp.kind == "capacitor" else 60.0
+            else:
+                comp.width = 40.0 if comp.kind == "capacitor" else 60.0
+                comp.height = 40.0
+            _calculate_standard_pin_positions(comp, left_pins, right_pins, top_pins, bottom_pins)
+            continue
 
         # Adaptive component dimensions
         num_pins = len(comp.pins)
@@ -177,6 +200,51 @@ def _assign_2pin_sides(
 
     # 4. Default: first pin LEFT, second pin RIGHT
     p1.side, p2.side = Side.LEFT, Side.RIGHT
+
+
+def _assign_3pin_switch_sides(
+    comp: Component,
+    pins: List[Pin],
+    pin_peer_map: Dict[Tuple[str, str], List[str]],
+    all_comps: Dict[str, Component],
+    use_geometry: bool = False,
+) -> None:
+    """Assigns common terminal to one side and two switch throws to opposite side."""
+    common_pin = None
+    for p in pins:
+        if p.name.upper() in ("2", "COM", "COMMON", "C", "IN"):
+            common_pin = p
+            break
+    if not common_pin:
+        common_pin = pins[1] if len(pins) >= 2 else pins[0]
+
+    throws = [p for p in pins if p != common_pin]
+
+    com_peers = pin_peer_map.get((comp.id, common_pin.name), [])
+    throw_peers = []
+    for t in throws:
+        throw_peers.extend(pin_peer_map.get((comp.id, t.name), []))
+
+    if use_geometry:
+        com_comps = [all_comps[cid] for cid in com_peers if cid in all_comps and cid != comp.id]
+        thr_comps = [all_comps[cid] for cid in throw_peers if cid in all_comps and cid != comp.id]
+        com_dx = (sum(c.center.x for c in com_comps) / len(com_comps) - comp.center.x) if com_comps else None
+        thr_dx = (sum(c.center.x for c in thr_comps) / len(thr_comps) - comp.center.x) if thr_comps else None
+
+        if com_dx is not None and com_dx > 10.0:
+            common_pin.side = Side.RIGHT
+            for t in throws:
+                t.side = Side.LEFT
+            return
+        if thr_dx is not None and thr_dx < -10.0:
+            common_pin.side = Side.RIGHT
+            for t in throws:
+                t.side = Side.LEFT
+            return
+
+    common_pin.side = Side.LEFT
+    for t in throws:
+        t.side = Side.RIGHT
 
 
 def _choose_pin_side(
@@ -281,3 +349,76 @@ def _calculate_pin_positions(
         px = start_x + i * PIN_PITCH
         pin.lead_start = Point(px, round((comp.y + comp.height) / GRID_SIZE) * GRID_SIZE)
         pin.position = Point(px, pin.lead_start.y + PIN_LEAD_LEN)
+
+
+def _calculate_standard_pin_positions(
+    comp: Component,
+    left_pins: List[Pin],
+    right_pins: List[Pin],
+    top_pins: List[Pin],
+    bottom_pins: List[Pin],
+) -> None:
+    """Calculates pin positions for standard symbolic components strictly snapped to grid."""
+    is_vertical = (len(top_pins) + len(bottom_pins)) > (len(left_pins) + len(right_pins))
+
+    if is_vertical:
+        cx = round((comp.x + comp.width / 2.0) / GRID_SIZE) * GRID_SIZE
+        top_y = round(comp.y / GRID_SIZE) * GRID_SIZE
+        bot_y = round((comp.y + comp.height) / GRID_SIZE) * GRID_SIZE
+        if top_pins:
+            for p in top_pins:
+                p.lead_start = Point(cx, top_y)
+                p.position = Point(cx, top_y)
+        if bottom_pins:
+            for p in bottom_pins:
+                p.lead_start = Point(cx, bot_y)
+                p.position = Point(cx, bot_y)
+        return
+
+    # Horizontal orientation
+    cy = round((comp.y + comp.height / 2.0) / GRID_SIZE) * GRID_SIZE
+    left_x = round(comp.x / GRID_SIZE) * GRID_SIZE
+    right_x = round((comp.x + comp.width) / GRID_SIZE) * GRID_SIZE
+
+    # SPDT / 3-terminal switch special pin placement
+    if comp.kind == "switch" and len(comp.pins) == 3:
+        top_y = round(comp.y / GRID_SIZE) * GRID_SIZE
+        bot_y = round((comp.y + comp.height) / GRID_SIZE) * GRID_SIZE
+        if len(left_pins) == 1 and len(right_pins) == 2:
+            left_pins[0].lead_start = Point(left_x, cy)
+            left_pins[0].position = Point(left_x, cy)
+            # Sort right pins: throw 1 on top, throw 2 on bottom
+            right_pins[0].lead_start = Point(right_x, top_y)
+            right_pins[0].position = Point(right_x, top_y)
+            right_pins[1].lead_start = Point(right_x, bot_y)
+            right_pins[1].position = Point(right_x, bot_y)
+            return
+        elif len(right_pins) == 1 and len(left_pins) == 2:
+            right_pins[0].lead_start = Point(right_x, cy)
+            right_pins[0].position = Point(right_x, cy)
+            left_pins[0].lead_start = Point(left_x, top_y)
+            left_pins[0].position = Point(left_x, top_y)
+            left_pins[1].lead_start = Point(left_x, bot_y)
+            left_pins[1].position = Point(left_x, bot_y)
+            return
+
+    # Standard 2-pin passives: 1 pin left, 1 pin right
+    if len(left_pins) == 1:
+        left_pins[0].lead_start = Point(left_x, cy)
+        left_pins[0].position = Point(left_x, cy)
+    else:
+        for i, p in enumerate(left_pins):
+            py = cy + (i - len(left_pins) / 2.0 + 0.5) * PIN_PITCH
+            py_snap = round(py / GRID_SIZE) * GRID_SIZE
+            p.lead_start = Point(left_x, py_snap)
+            p.position = Point(left_x, py_snap)
+
+    if len(right_pins) == 1:
+        right_pins[0].lead_start = Point(right_x, cy)
+        right_pins[0].position = Point(right_x, cy)
+    else:
+        for i, p in enumerate(right_pins):
+            py = cy + (i - len(right_pins) / 2.0 + 0.5) * PIN_PITCH
+            py_snap = round(py / GRID_SIZE) * GRID_SIZE
+            p.lead_start = Point(right_x, py_snap)
+            p.position = Point(right_x, py_snap)
