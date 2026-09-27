@@ -30,15 +30,14 @@ def _is_global_power_net(net: Net) -> bool:
 
 
 def _get_net_weight(net: Net) -> float:
-    """Calculates the physical attraction weight of a net for horizontal wire alignment."""
-    nu = net.name.upper()
+    """Calculates the physical attraction weight of a net based on terminal count (pure graph theory)."""
+    k = len(net.connections)
     if _is_global_power_net(net):
         return 0.5
-    if any(k in nu for k in ["SENSE", "SHUNT", "DIFF"]):
-        return 100.0
-    if any(k in nu for k in ["BATT_POS", "BATT_VCC", "DCDC_IN", "5V_RAW", "PWR_OUT", "KEY_PWR", "DISP_VCC", "DISP_KEY"]):
-        return 30.0
-    return 50.0
+    if k <= 2:
+        return 50.0  # Point-to-point dedicated connection
+    return max(1.0, 50.0 / (k - 1))
+
 
 
 def _solve_column_1d(
@@ -180,12 +179,10 @@ class SchematicPlacer:
                     if src_cid != tgt_cid and src_cid in self.schematic.components and tgt_cid in self.schematic.components:
                         directed_adj[src_cid].add(tgt_cid)
 
-        # 3. Identify central Hub component (e.g. microcontroller)
-        non_standard = [c for c in comps if not c.is_standard]
-        candidate_hubs = non_standard if non_standard else comps
-        hub = max(candidate_hubs, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
+        # 3. Identify central Hub component by graph centrality (pin count and connection weight)
+        hub = max(comps, key=lambda c: (len(c.pins) * 10.0 + sum(adj[c.id].values())))
 
-        # 4. Determine side relative to Hub for all components
+        # 4. Determine side relative to Hub for all components via Maximum Adjacency Ordering (MAO)
         comp_side: Dict[str, Side] = {hub.id: Side.LEFT}
         side_votes: Dict[str, Dict[Side, float]] = {}
 
@@ -195,7 +192,7 @@ class SchematicPlacer:
             h_conns = [c for c in net.connections if c.component_id == hub.id]
             o_conns = [c for c in net.connections if c.component_id != hub.id]
             if h_conns and o_conns:
-                w_conn = 0.5 if any(k in net.name.upper() for k in ["3V3", "5V", "VCC"]) else 10.0
+                w_conn = 1.0 if len(net.connections) >= 3 else 10.0
                 for hc in h_conns:
                     h_pin = hub.pins.get(hc.pin_id) if hc.pin_id else hub.get_pin(hc.pin_name)
                     side = h_pin.side if h_pin else Side.LEFT
@@ -206,40 +203,22 @@ class SchematicPlacer:
         for cid, votes in side_votes.items():
             comp_side[cid] = max(votes.keys(), key=lambda s: votes[s])
 
-        # Propagate sides for unassigned chained components
-        unassigned = [c.id for c in comps if c.id not in comp_side and c.id != hub.id]
+        # Maximum Adjacency Ordering: assign remaining components based on strongest connection to assigned set
+        assigned = set(comp_side.keys())
+        unassigned = [c.id for c in comps if c.id not in assigned]
         while unassigned:
-            progress = False
-            for cid in list(unassigned):
-                nbrs = [nbr for nbr in adj[cid] if nbr in comp_side]
-                if nbrs:
-                    best_nbr = max(nbrs, key=lambda n: adj[cid][n])
-                    comp_side[cid] = comp_side[best_nbr]
-                    unassigned.remove(cid)
-                    progress = True
-            if not progress:
-                for cid in unassigned:
-                    comp_side[cid] = Side.LEFT
-                break
+            def score(u: str) -> float:
+                return sum(adj[u].get(v, 0.0) for v in assigned)
 
-        # 5. Coupled pairs (Kelvin sense / differential measurement)
-        parent_of: Dict[str, str] = {}
-        child_of: Dict[str, str] = {}
-        for net in self.schematic.nets:
-            nu = net.name.upper()
-            if len(net.connections) == 2 and any(k in nu for k in ["SENSE", "SHUNT", "DIFF"]):
-                u_id = net.connections[0].component_id
-                v_id = net.connections[1].component_id
-                if u_id != hub.id and v_id != hub.id and u_id in self.schematic.components and v_id in self.schematic.components:
-                    u = self.schematic.components[u_id]
-                    v = self.schematic.components[v_id]
-                    p, ch = (u.id, v.id) if len(u.pins) <= len(v.pins) else (v.id, u.id)
-                    if ch not in child_of and p not in parent_of.values():
-                        parent_of[p] = ch
-                        child_of[ch] = p
+            best_u = max(unassigned, key=score)
+            left_w = sum(adj[best_u].get(v, 0.0) for v in assigned if comp_side[v] == Side.LEFT)
+            right_w = sum(adj[best_u].get(v, 0.0) for v in assigned if comp_side[v] == Side.RIGHT)
+            comp_side[best_u] = Side.LEFT if left_w >= right_w else Side.RIGHT
+            assigned.add(best_u)
+            unassigned.remove(best_u)
 
-        # 6. Topological flow depth for left components
-        left_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.LEFT and c.id not in child_of]
+        # 5. Topological flow depth for left components (DAG Longest Path)
+        left_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.LEFT]
         depth: Dict[str, int] = {}
 
         for c in left_comps:
@@ -263,30 +242,60 @@ class SchematicPlacer:
                 known = [k for k in depth if k in adj[c.id]]
                 depth[c.id] = max(depth[k] + 1 for k in known) if known else 0
 
-        # Hub-connected sensor or secondary nodes that had in-degree 0 placed near the Hub
         max_d = max(depth.values(), default=0)
+        hub_col = max_d + 1
+        left_comp_ids = {c.id for c in left_comps}
+
+        # 6. Graph-Theoretic ALAP + Layer Balancing (Gansner et al. / Coffman-Graham)
+        # Compute topological ALAP upper bound
+        alap = {c.id: max_d for c in left_comps}
+        for _ in range(len(left_comps) + 1):
+            for u in left_comps:
+                out_succs = [v_id for v_id in directed_adj.get(u.id, set()) if v_id in left_comp_ids]
+                if out_succs:
+                    alap[u.id] = min(alap[u.id], min(alap[s] - 1 for s in out_succs))
+
+        # Assign rigid nodes first (where asap == alap)
+        layer_assign: Dict[str, int] = {}
         for c in left_comps:
-            is_power_source = any(k in c.id.upper() or k in c.type_name.upper() for k in ["BATTERY", "SUPPLY", "CELL", "VCC"])
-            if depth[c.id] == 0 and not is_power_source and hub.id in adj[c.id]:
-                depth[c.id] = max(1, max_d - 1)
+            if depth[c.id] == alap[c.id]:
+                layer_assign[c.id] = depth[c.id]
 
-        # ALAP & Layer Balancing: standard passives directly serving Hub pins move close to the Hub
-        for c in left_comps:
-            if c.is_standard and hub.id in adj[c.id]:
-                depth[c.id] = max(depth[c.id], max_d)
+        # Place flexible nodes to minimize total weighted edge span with layer capacity balancing
+        flex_comps = [c for c in left_comps if c.id not in layer_assign]
+        flex_comps.sort(key=lambda c: -sum(adj[c.id].values()))
 
-        for ch, p in child_of.items():
-            depth[ch] = depth.get(p, 0)
+        alpha = 30.0  # Layer capacity penalty per component to prevent overcrowding
+        for c in flex_comps:
+            best_L = depth[c.id]
+            best_cost = float('inf')
+            for L in range(depth[c.id], alap[c.id] + 1):
+                edge_cost = 0.0
+                for peer_id, w in adj[c.id].items():
+                    if peer_id == hub.id:
+                        peer_L = hub_col
+                    elif peer_id in layer_assign:
+                        peer_L = layer_assign[peer_id]
+                    elif peer_id in depth:
+                        peer_L = (depth[peer_id] + alap[peer_id]) / 2.0
+                    else:
+                        continue
+                    edge_cost += w * abs(L - peer_L)
 
-        # 7. Map to column indices
-        max_left_depth = max(depth.values(), default=0)
+                col_count = sum(1 for cid, cl in layer_assign.items() if cl == L)
+                cost = edge_cost + alpha * col_count
+                if cost < best_cost:
+                    best_cost = cost
+                    best_L = L
+            layer_assign[c.id] = best_L
+
+        # Map to column indices
+        max_left_depth = max(layer_assign.values(), default=0)
         hub_col = max_left_depth + 1
 
         comp_col: Dict[str, int] = {hub.id: hub_col}
         for c in left_comps:
-            comp_col[c.id] = depth[c.id]
-        for ch, p in child_of.items():
-            comp_col[ch] = comp_col[p]
+            comp_col[c.id] = layer_assign[c.id]
 
         right_comps = [c for c in comps if c.id != hub.id and comp_side.get(c.id) == Side.RIGHT]
         for c in right_comps:
@@ -302,7 +311,7 @@ class SchematicPlacer:
             col_idx = comp_col[c.id]
             columns.setdefault(col_idx, []).append(c)
 
-        # 8. Compute column X positions
+        # 7. Compute column X positions
         col_x: Dict[int, float] = {}
         cur_x = MARGIN
         sorted_col_keys = sorted(columns.keys())
@@ -312,20 +321,15 @@ class SchematicPlacer:
             col_x[col_idx] = cur_x
             cur_x += max_w + COLUMN_CORRIDOR
 
-        # 9. Port-Aware Two-Sided Barycentric Sweeps + 1D Optimal Grid Legalization
+        # 8. Port-Aware Two-Sided Barycentric Sweeps + 1D Optimal Grid Legalization
         current_y: Dict[str, float] = {}
         for col_idx in sorted_col_keys:
-            col_comps = [c for c in columns[col_idx] if c.id not in child_of]
+            col_comps = columns[col_idx]
             for i, c in enumerate(col_comps):
                 init_y = MARGIN + i * (c.height + ROW_CORRIDOR)
                 c.y = snap_to_grid(init_y, GRID_SIZE)
                 c.x = snap_to_grid(col_x[col_idx], GRID_SIZE)
                 current_y[c.id] = c.y
-                if c.id in parent_of:
-                    ch = self.schematic.components[parent_of[c.id]]
-                    ch.x = c.x
-                    ch.y = c.y + c.height + ROW_CORRIDOR
-                    current_y[ch.id] = ch.y
 
         # Anchor Hub MCU at MARGIN
         current_y[hub.id] = MARGIN
@@ -336,7 +340,7 @@ class SchematicPlacer:
             allocate_pins_and_dimensions(self.schematic, use_geometry=True)
             col_order = sorted_col_keys if (sweep % 2 == 0) else list(reversed(sorted_col_keys))
             for col_idx in col_order:
-                col_comps = [c for c in columns[col_idx] if c.id not in child_of]
+                col_comps = columns[col_idx]
                 if not col_comps:
                     continue
                 if len(col_comps) == 1 and col_comps[0].id == hub.id:
@@ -351,23 +355,11 @@ class SchematicPlacer:
                         w = 1000.0
                     else:
                         ideal_y, w = self._calculate_component_ideal_y(c, current_y, comp_col)
-                        is_pwr = any(
-                            k in c.id.upper() or k in c.type_name.upper()
-                            for k in ["BATTERY", "SUPPLY", "CELL", "FUSE"]
-                        )
-                        if is_pwr:
-                            ideal_y = MARGIN
-                            w += 100.0
-
-                    eff_h = c.height
-                    if c.id in parent_of:
-                        ch = self.schematic.components[parent_of[c.id]]
-                        eff_h += ROW_CORRIDOR + ch.height
 
                     items.append({
                         "id": c.id,
                         "ideal_y": ideal_y,
-                        "height": eff_h,
+                        "height": c.height,
                         "weight": w,
                     })
 
@@ -376,20 +368,15 @@ class SchematicPlacer:
                     new_y = placed_y[c.id]
                     c.y = new_y
                     current_y[c.id] = new_y
-                    if c.id in parent_of:
-                        ch = self.schematic.components[parent_of[c.id]]
-                        ch.x = c.x
-                        ch.y = new_y + c.height + ROW_CORRIDOR
-                        current_y[ch.id] = ch.y
 
         # Final application of coordinates
         for c in comps:
             c.x = snap_to_grid(col_x[comp_col[c.id]], GRID_SIZE)
             c.y = snap_to_grid(current_y[c.id], GRID_SIZE)
 
-        # 10. Re-assign pins with true 2D geometry facing connected peers
+        # 9. Re-assign pins with true 2D geometry facing connected peers
         allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-        # 11. Resolve equivalent pins to nearest candidate
+        # 10. Resolve equivalent pins to nearest candidate
         self._resolve_equivalent_pins()
         self._finalize_bounds()
 

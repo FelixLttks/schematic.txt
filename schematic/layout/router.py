@@ -46,6 +46,8 @@ class SchematicRouter:
         self.edge_occupant: Dict[Tuple[Tuple[float, float], Tuple[float, float]], str] = {}
         self.node_occupants: Dict[Tuple[float, float], Set[str]] = {}
         self.blocked_nodes: Set[Tuple[float, float]] = set()
+        self.pin_escape_nodes: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
+        self.pin_corridor_info: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
 
     def route(self) -> None:
         self.segments.clear()
@@ -80,7 +82,8 @@ class SchematicRouter:
             for p in c.pins.values():
                 self.blocked_nodes.add((round(p.position.x, 1), round(p.position.y, 1)))
 
-        # Identify pin breakout corridors (depth of 3 grid units = 60px) so foreign nets cannot bend or block breakout rays
+        # Identify immediate pin escape nodes (k=1) and corridors (k=1..3)
+        self.pin_escape_nodes: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
         self.pin_corridor_info: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
         for c in comps:
             for p in c.pins.values():
@@ -93,13 +96,17 @@ class SchematicRouter:
                         node = (round(p.position.x, 1), round(p.position.y - k * GRID_SIZE, 1))
                     else:
                         node = (round(p.position.x, 1), round(p.position.y + k * GRID_SIZE, 1))
+                    if k == 1:
+                        self.pin_escape_nodes.setdefault(node, set()).add((c.id, p.name))
                     self.pin_corridor_info.setdefault(node, set()).add((c.id, p.name))
 
-        # 3. Sort nets: Signal nets first for direct routing, then power rails
+        # 3. Sort nets: Point-to-point nets first for direct routing, then multi-drop buses and ground rails
         def net_sort_key(net: Net) -> Tuple[int, int, str]:
             nu = net.name.upper()
-            is_pwr = any(p in nu for p in ["GND", "VSS", "3V3", "5V", "VCC", "VIN", "VDD"])
-            return (1 if is_pwr else 0, -len(net.connections), net.name)
+            is_return = any(p in nu for p in ["GND", "VSS", "NEG"])
+            is_multi = len(net.connections) >= 3
+            prio = 2 if is_return else (1 if is_multi else 0)
+            return (prio, -len(net.connections), net.name)
 
         sorted_nets = sorted(self.schematic.nets, key=net_sort_key)
 
@@ -115,19 +122,7 @@ class SchematicRouter:
             for p in pins:
                 self.blocked_nodes.discard(p)
 
-            # Group pins by component to identify internally connected pins (e.g. left and right GND on same chip)
-            comp_to_pins: Dict[str, List[Tuple[float, float]]] = {}
-            for pos in pins:
-                for c in comps:
-                    if any((round(p.position.x, 1), round(p.position.y, 1)) == pos for p in c.pins.values()):
-                        comp_to_pins.setdefault(c.id, []).append(pos)
-                        break
-
-            primary_cid = max(comp_to_pins.keys(), key=lambda cid: len(comp_to_pins[cid])) if comp_to_pins else None
-            if primary_cid and len(comp_to_pins[primary_cid]) > 1:
-                tree_nodes: Set[Tuple[float, float]] = set(comp_to_pins[primary_cid])
-            else:
-                tree_nodes = {pins[0]}
+            tree_nodes: Set[Tuple[float, float]] = {pins[0]}
 
             tree_terminal_set = set(pins)
             net_edges: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
@@ -155,8 +150,8 @@ class SchematicRouter:
                     self.node_occupants.setdefault(path[i], set()).add(net.name)
                     self.node_occupants.setdefault(path[i + 1], set()).add(net.name)
 
-                # Merge contiguous collinear units into long segments
-                for s, e in self._merge_path(path):
+                # Merge contiguous collinear units into long segments (splitting at pin terminals)
+                for s, e in self._merge_path(path, tree_terminal_set):
                     self.segments.append(WireSegment(Point(s[0], s[1]), Point(e[0], e[1]), net.name, color))
 
             # Re-block current net's pin terminals for subsequent nets
@@ -252,9 +247,9 @@ class SchematicRouter:
                 if is_bend and u_occs and net_name not in u_occs:
                     continue
 
-                # Strict rule 2: A foreign net may NEVER bend inside an active pin's breakout corridor!
-                foreign_corridor_u = self.pin_corridor_info.get(u)
-                if is_bend and foreign_corridor_u and not any(p in net_pins for p in foreign_corridor_u):
+                # Strict rule 2: A foreign net may NEVER bend inside an active pin's immediate escape node (k=1)!
+                foreign_escape_u = self.pin_escape_nodes.get(u)
+                if is_bend and foreign_escape_u and not any(p in net_pins for p in foreign_escape_u):
                     continue
 
                 step_cost = STEP_COST + (BEND_PENALTY if is_bend else 0.0)
@@ -300,11 +295,12 @@ class SchematicRouter:
         return path
 
     def _merge_path(
-        self, nodes: List[Tuple[float, float]]
+        self, nodes: List[Tuple[float, float]], terminal_nodes: Optional[Set[Tuple[float, float]]] = None
     ) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
-        """Merges contiguous collinear unit segments in the same direction."""
+        """Merges contiguous collinear unit segments in the same direction, splitting at pin terminals."""
         if len(nodes) < 2:
             return []
+        terminals = terminal_nodes or set()
         segments = []
         start = nodes[0]
         curr_dir = (round(nodes[1][0] - nodes[0][0], 1), round(nodes[1][1] - nodes[0][1], 1))
@@ -312,7 +308,7 @@ class SchematicRouter:
 
         for nxt in nodes[2:]:
             nxt_dir = (round(nxt[0] - prev[0], 1), round(nxt[1] - prev[1], 1))
-            if nxt_dir == curr_dir:
+            if nxt_dir == curr_dir and prev not in terminals:
                 prev = nxt
             else:
                 segments.append((start, prev))
@@ -327,32 +323,30 @@ class SchematicRouter:
         nu = net_name.upper()
 
         # 1. Ground & Return
-        if any(k in nu for k in ["GND", "VSS", "NEG", "BATT-"]):
+        if any(k in nu for k in ["GND", "VSS", "NEG", "RETURN"]):
             return "#64748b"
 
-        # 2. High Voltage & Raw Battery Power (Vivid Orange)
-        if any(k in nu for k in ["BATT_POS", "BATT_VCC", "DCDC_IN", "36V", "48V", "BAT_IN", "LOAD_OUT", "RAW", "HV"]):
+        # 2. Raw / Battery / High-Voltage Power (Vivid Orange)
+        if any(k in nu for k in ["BAT", "RAW", "HV", "36V", "48V"]):
             return "#f97316"
 
-        # 3. Logic Power Rails (Crisp Red)
-        if any(k in nu for k in ["3V3", "5V", "VCC", "VIN", "VDD", "VOUT", "PWR_IN", "PWR_OUT", "DISP_VCC"]):
+        # 3. Regulated DC Logic Power (Crisp Red)
+        if any(k in nu for k in ["VCC", "VDD", "VIN", "VOUT", "PWR", "3V3", "5V", "12V", "24V"]):
             return "#ef4444"
 
-        # 4. Precision Analog & Shunt Sensing (Rose / Magenta)
-        if any(k in nu for k in ["SHUNT", "SENSE", "ANALOG", "ADC"]):
+        # 4. Analog / Sensor / Differential (Rose / Magenta)
+        if any(k in nu for k in ["ANALOG", "ADC", "SENSE", "DIFF"]):
             return "#ec4899"
 
-        # 5. Speed, Pulses, Interrupts & Timing (Cyan)
-        if any(k in nu for k in ["SPEED", "INT", "IRQ", "PWM", "PULSE"]):
+        # 5. Fast signals & Pulses (Cyan)
+        if any(k in nu for k in ["INT", "IRQ", "PWM", "PULSE"]):
             return "#06b6d4"
 
-        # 6. I2C Bus
+        # 6. Communication Protocols (I2C, SPI, UART)
         if "SDA" in nu:
             return "#38bdf8"
         if "SCL" in nu:
             return "#10b981"
-
-        # 7. SPI Bus (Individual distinct hues per signal)
         if "MOSI" in nu:
             return "#818cf8"
         if "MISO" in nu:
@@ -361,15 +355,13 @@ class SchematicRouter:
             return "#10b981"
         if "CS" in nu or "SS" in nu:
             return "#fbbf24"
-
-        # 8. UART / Serial (Distinct TX and RX)
         if "TX" in nu:
             return "#f59e0b"
         if "RX" in nu:
             return "#2dd4bf"
 
-        # 9. Control / Key / Enable (Violet)
-        if any(k in nu for k in ["KEY", "EN", "RST", "RESET", "CTRL"]):
+        # 7. Control & Enables (Violet)
+        if any(k in nu for k in ["EN", "ENABLE", "RST", "RESET", "CTRL"]):
             return "#a78bfa"
 
         # 10. Default General Signal (High-contrast Sky Blue)

@@ -362,26 +362,31 @@ class SvgRenderer:
     def _get_net_color(self, net_name: str) -> str:
         name_u = net_name.upper()
 
-        if any(k in name_u for k in ["GND", "VSS", "NEG", "BATT-"]):
+        # 1. Ground & Return
+        if any(k in name_u for k in ["GND", "VSS", "NEG", "RETURN"]):
             return "#64748b" if self.dark_theme else "#475569"
 
-        if any(k in name_u for k in ["BATT_POS", "BATT_VCC", "DCDC_IN", "36V", "48V", "BAT_IN", "LOAD_OUT", "RAW", "HV"]):
+        # 2. Raw / Battery / High-Voltage Power
+        if any(k in name_u for k in ["BAT", "RAW", "HV", "36V", "48V"]):
             return "#f97316" if self.dark_theme else "#ea580c"
 
-        if any(k in name_u for k in ["3V3", "5V", "VCC", "VIN", "VDD", "VOUT", "PWR_IN", "PWR_OUT", "DISP_VCC"]):
+        # 3. Regulated DC Logic Power
+        if any(k in name_u for k in ["VCC", "VDD", "VIN", "VOUT", "PWR", "3V3", "5V", "12V", "24V"]):
             return "#ef4444" if self.dark_theme else "#dc2626"
 
-        if any(k in name_u for k in ["SHUNT", "SENSE", "ANALOG", "ADC"]):
+        # 4. Analog / Sensor / Differential
+        if any(k in name_u for k in ["ANALOG", "ADC", "SENSE", "DIFF"]):
             return "#ec4899" if self.dark_theme else "#db2777"
 
-        if any(k in name_u for k in ["SPEED", "INT", "IRQ", "PWM", "PULSE"]):
+        # 5. Fast signals & Pulses
+        if any(k in name_u for k in ["INT", "IRQ", "PWM", "PULSE"]):
             return "#06b6d4" if self.dark_theme else "#0891b2"
 
+        # 6. Communication Protocols (I2C, SPI, UART)
         if "SDA" in name_u:
             return "#38bdf8" if self.dark_theme else "#0284c7"
         if "SCL" in name_u:
             return "#10b981" if self.dark_theme else "#059669"
-
         if "MOSI" in name_u:
             return "#818cf8" if self.dark_theme else "#4f46e5"
         if "MISO" in name_u:
@@ -390,13 +395,13 @@ class SvgRenderer:
             return "#10b981" if self.dark_theme else "#059669"
         if "CS" in name_u or "SS" in name_u:
             return "#fbbf24" if self.dark_theme else "#d97706"
-
         if "TX" in name_u:
             return "#f59e0b" if self.dark_theme else "#d97706"
         if "RX" in name_u:
             return "#2dd4bf" if self.dark_theme else "#0d9488"
 
-        if any(k in name_u for k in ["KEY", "EN", "RST", "RESET", "CTRL"]):
+        # 7. Control & Enables
+        if any(k in name_u for k in ["EN", "ENABLE", "RST", "RESET", "CTRL"]):
             return "#a78bfa" if self.dark_theme else "#7c3aed"
 
         return "#38bdf8" if self.dark_theme else "#0284c7"

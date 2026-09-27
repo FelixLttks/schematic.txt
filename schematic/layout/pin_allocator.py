@@ -156,26 +156,7 @@ def _assign_2pin_sides(
     """Enforces professional opposite-side allocation for 2-pin passives and components."""
     p1_name, p2_name = p1.name, p2.name
     p1_u, p2_u = p1_name.upper(), p2_name.upper()
-    is_pwr_source = any(t in comp.type_name.upper() or t in comp.id.upper() for t in ["BATTERY", "SUPPLY", "CELL"])
-
-    # 1. Power source polarities (e.g. Battery, Supply): POS on RIGHT, NEG on LEFT
-    if is_pwr_source:
-        if any(t in p1_u for t in ["POS", "+", "VOUT", "OUT"]) or any(t in p2_u for t in ["NEG", "-", "GND"]):
-            p1.side, p2.side = Side.RIGHT, Side.LEFT
-            return
-        if any(t in p2_u for t in ["POS", "+", "VOUT", "OUT"]) or any(t in p1_u for t in ["NEG", "-", "GND"]):
-            p1.side, p2.side = Side.LEFT, Side.RIGHT
-            return
-
-    # 2. Polarities (IN/VIN/ANODE vs OUT/VOUT/CATHODE)
-    if any(t in p1_u for t in ["IN", "VIN", "ANODE"]) or any(t in p2_u for t in ["OUT", "VOUT", "CATHODE"]):
-        p1.side, p2.side = Side.LEFT, Side.RIGHT
-        return
-    if any(t in p2_u for t in ["IN", "VIN", "ANODE"]) or any(t in p1_u for t in ["OUT", "VOUT", "CATHODE"]):
-        p1.side, p2.side = Side.RIGHT, Side.LEFT
-        return
-
-    # 3. 2D Peer geometry: the pin with peers further to the left gets LEFT
+    # 1. 2D Peer geometry: if 2D placement is known, face the actual connected peers
     if use_geometry:
         peers1 = [all_comps[cid] for cid in pin_peer_map.get((comp.id, p1_name), []) if cid in all_comps and cid != comp.id]
         peers2 = [all_comps[cid] for cid in pin_peer_map.get((comp.id, p2_name), []) if cid in all_comps and cid != comp.id]
@@ -183,22 +164,35 @@ def _assign_2pin_sides(
         dx2 = (sum(c.center.x for c in peers2) / len(peers2) - comp.center.x) if peers2 else None
 
         if dx1 is not None and dx2 is not None:
-            if dx1 < dx2 - 5.0:
+            if dx1 < -5.0 and dx2 > 5.0:
                 p1.side, p2.side = Side.LEFT, Side.RIGHT
                 return
-            elif dx2 < dx1 - 5.0:
+            elif dx2 < -5.0 and dx1 > 5.0:
                 p1.side, p2.side = Side.RIGHT, Side.LEFT
                 return
-        elif dx1 is not None:
+        elif dx1 is not None and abs(dx1) > 10.0:
             p1.side = Side.LEFT if dx1 < 0 else Side.RIGHT
             p2.side = Side.RIGHT if p1.side == Side.LEFT else Side.LEFT
             return
-        elif dx2 is not None:
+        elif dx2 is not None and abs(dx2) > 10.0:
             p2.side = Side.LEFT if dx2 < 0 else Side.RIGHT
             p1.side = Side.RIGHT if p2.side == Side.LEFT else Side.LEFT
             return
 
-    # 4. Default: first pin LEFT, second pin RIGHT
+    # 2. Standard terminal polarity conventions: Inputs/Returns on LEFT, Outputs/Sources on RIGHT
+    p1_is_in = any(t in p1_u for t in ["IN", "VIN", "ANODE", "NEG", "-"])
+    p2_is_in = any(t in p2_u for t in ["IN", "VIN", "ANODE", "NEG", "-"])
+    p1_is_out = any(t in p1_u for t in ["OUT", "VOUT", "CATHODE", "POS", "+"])
+    p2_is_out = any(t in p2_u for t in ["OUT", "VOUT", "CATHODE", "POS", "+"])
+
+    if (p1_is_in and p2_is_out) or (p1_is_in and not p2_is_in) or (p2_is_out and not p1_is_out):
+        p1.side, p2.side = Side.LEFT, Side.RIGHT
+        return
+    if (p2_is_in and p1_is_out) or (p2_is_in and not p1_is_in) or (p1_is_out and not p2_is_out):
+        p1.side, p2.side = Side.RIGHT, Side.LEFT
+        return
+
+    # 3. Default: first pin LEFT, second pin RIGHT
     p1.side, p2.side = Side.LEFT, Side.RIGHT
 
 
