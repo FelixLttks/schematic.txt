@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Set, Tuple
 from schematic.models import Component, Net, Pin, Point, Side
+from schematic.semantics import is_ground, is_power
 
 GRID_SIZE = 20.0
 PIN_PITCH = 20.0
@@ -13,10 +14,15 @@ MIN_WIDTH = 140.0
 MIN_HEIGHT = 80.0
 
 
-def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
-    """
-    Assigns sides (LEFT, RIGHT, TOP, BOTTOM) and layout coordinates
-    to all pins of all components in the schematic.
+def allocate_pins_and_dimensions(
+    schematic, use_geometry: bool = False, redistribute_sides: bool = True
+) -> None:
+    """Assign sides (LEFT, RIGHT, TOP, BOTTOM) and coordinates to all pins.
+
+    With ``redistribute_sides=False`` the current side of every pin is kept
+    and only sizes/coordinates are recomputed.  The placement engine uses
+    this to freeze orientation decisions (it controls them explicitly through
+    mirror moves) instead of letting side proposals flip underneath it.
     Strictly aligns all dimensions and coordinates to GRID_SIZE (20.0).
     """
     # 1. Build connection map: for each (comp_id, pin_name), which other components does it connect to?
@@ -29,10 +35,9 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
     # relative rows at every endpoint, regardless of pin names or signal type.
     bundle_groups: Dict[Tuple[str, ...], List[Net]] = {}
     for net in schematic.nets:
-        upper_name = net.name.upper()
-        if any(token in upper_name for token in ("GND", "VSS", "NEG")):
+        if is_ground(net.name):
             continue
-        if len(net.connections) >= 3 and any(token in upper_name for token in ("3V3", "3.3V", "5V", "VCC", "VIN", "VDD")):
+        if len(net.connections) >= 3 and is_power(net.name):
             continue
         endpoints = tuple(sorted({conn.component_id for conn in net.connections}))
         if len(endpoints) >= 2:
@@ -66,45 +71,27 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
 
         comp_pin_list = list(comp.pins.values())
 
-        if len(comp_pin_list) == 2 and all(not p.side_specified for p in comp_pin_list):
-            _assign_2pin_sides(comp, comp_pin_list[0], comp_pin_list[1], pin_peer_map, schematic.components, use_geometry)
+        # One uniform rule for every component: two-pin bodies get opposite
+        # sides (symbol convention), every other pin faces the side proposed
+        # by geometry or naming conventions.  When sides are frozen, only the
+        # engine's mirror moves flip them.
+        if redistribute_sides and len(comp_pin_list) == 2 and all(not p.side_specified for p in comp_pin_list):
+            _assign_2pin_sides(comp_pin_list[0], comp_pin_list[1])
+        elif redistribute_sides:
             for pin in comp_pin_list:
-                if pin.side == Side.LEFT:
-                    left_pins.append(pin)
-                elif pin.side == Side.RIGHT:
-                    right_pins.append(pin)
-                elif pin.side == Side.TOP:
-                    top_pins.append(pin)
-                else:
-                    bottom_pins.append(pin)
-        elif comp.kind == "switch" and len(comp_pin_list) == 3 and all(not p.side_specified for p in comp_pin_list):
-            _assign_3pin_switch_sides(comp, comp_pin_list, pin_peer_map, schematic.components, use_geometry)
-            for pin in comp_pin_list:
-                if pin.side == Side.LEFT:
-                    left_pins.append(pin)
-                elif pin.side == Side.RIGHT:
-                    right_pins.append(pin)
-                elif pin.side == Side.TOP:
-                    top_pins.append(pin)
-                else:
-                    bottom_pins.append(pin)
-        else:
-            for pin in comp_pin_list:
-                if pin.side_specified:
-                    side = pin.side
-                else:
+                if not pin.side_specified:
                     peers = pin_peer_map.get((comp_id, pin.name), [])
-                    side = _choose_pin_side(comp, pin, peers, schematic.components, use_geometry)
-                    pin.side = side
+                    pin.side = _choose_pin_side(comp, pin, peers, schematic.components, use_geometry)
 
-                if side == Side.LEFT:
-                    left_pins.append(pin)
-                elif side == Side.RIGHT:
-                    right_pins.append(pin)
-                elif side == Side.TOP:
-                    top_pins.append(pin)
-                else:
-                    bottom_pins.append(pin)
+        for pin in comp_pin_list:
+            if pin.side == Side.LEFT:
+                left_pins.append(pin)
+            elif pin.side == Side.RIGHT:
+                right_pins.append(pin)
+            elif pin.side == Side.TOP:
+                top_pins.append(pin)
+            else:
+                bottom_pins.append(pin)
 
         # Build pin target Y-map for barycentric crossing minimization
         pin_peer_y: Dict[str, float] = {}
@@ -169,100 +156,80 @@ def allocate_pins_and_dimensions(schematic, use_geometry: bool = False) -> None:
         _calculate_pin_positions(comp, left_pins, right_pins, top_pins, bottom_pins, header_h)
 
 
-def _assign_2pin_sides(
-    comp: Component,
-    p1: Pin,
-    p2: Pin,
-    pin_peer_map: Dict[Tuple[str, str], List[str]],
-    all_comps: Dict[str, Component],
-    use_geometry: bool = False,
-) -> None:
-    """Enforces professional opposite-side allocation for 2-pin passives and components."""
-    p1_name, p2_name = p1.name, p2.name
-    p1_u, p2_u = p1_name.upper(), p2_name.upper()
-    # 1. 2D Peer geometry: if 2D placement is known, face the actual connected peers
-    if use_geometry:
-        peers1 = [all_comps[cid] for cid in pin_peer_map.get((comp.id, p1_name), []) if cid in all_comps and cid != comp.id]
-        peers2 = [all_comps[cid] for cid in pin_peer_map.get((comp.id, p2_name), []) if cid in all_comps and cid != comp.id]
-        dx1 = (sum(c.center.x for c in peers1) / len(peers1) - comp.center.x) if peers1 else None
-        dx2 = (sum(c.center.x for c in peers2) / len(peers2) - comp.center.x) if peers2 else None
+def _assign_2pin_sides(p1: Pin, p2: Pin) -> None:
+    """Give a two-pin body opposite sides (symbol convention, not per kind).
 
-        if dx1 is not None and dx2 is not None:
-            if dx1 < -5.0 and dx2 > 5.0:
-                p1.side, p2.side = Side.LEFT, Side.RIGHT
-                return
-            elif dx2 < -5.0 and dx1 > 5.0:
-                p1.side, p2.side = Side.RIGHT, Side.LEFT
-                return
-        elif dx1 is not None and abs(dx1) > 10.0:
-            p1.side = Side.LEFT if dx1 < 0 else Side.RIGHT
-            p2.side = Side.RIGHT if p1.side == Side.LEFT else Side.LEFT
-            return
-        elif dx2 is not None and abs(dx2) > 10.0:
-            p2.side = Side.LEFT if dx2 < 0 else Side.RIGHT
-            p1.side = Side.RIGHT if p2.side == Side.LEFT else Side.LEFT
-            return
+    Polarity names only decide which terminal starts on the left; the
+    placement engine may mirror the body afterwards, so this is a starting
+    proposal rather than a fate.
+    """
+    p1_u, p2_u = p1.name.upper(), p2.name.upper()
+    p1_is_in = any(t in p1_u for t in ["IN", "ANODE", "NEG", "-"])
+    p2_is_in = any(t in p2_u for t in ["IN", "ANODE", "NEG", "-"])
+    p1_is_out = any(t in p1_u for t in ["OUT", "CATHODE", "POS", "+"])
+    p2_is_out = any(t in p2_u for t in ["OUT", "CATHODE", "POS", "+"])
 
-    # 2. Standard terminal polarity conventions: Inputs/Returns on LEFT, Outputs/Sources on RIGHT
-    p1_is_in = any(t in p1_u for t in ["IN", "VIN", "ANODE", "NEG", "-"])
-    p2_is_in = any(t in p2_u for t in ["IN", "VIN", "ANODE", "NEG", "-"])
-    p1_is_out = any(t in p1_u for t in ["OUT", "VOUT", "CATHODE", "POS", "+"])
-    p2_is_out = any(t in p2_u for t in ["OUT", "VOUT", "CATHODE", "POS", "+"])
-
-    if (p1_is_in and p2_is_out) or (p1_is_in and not p2_is_in) or (p2_is_out and not p1_is_out):
-        p1.side, p2.side = Side.LEFT, Side.RIGHT
-        return
-    if (p2_is_in and p1_is_out) or (p2_is_in and not p1_is_in) or (p1_is_out and not p2_is_out):
+    if (p2_is_in and not p1_is_in) or (p1_is_out and not p2_is_out):
         p1.side, p2.side = Side.RIGHT, Side.LEFT
-        return
-
-    # 3. Default: first pin LEFT, second pin RIGHT
-    p1.side, p2.side = Side.LEFT, Side.RIGHT
+    else:
+        p1.side, p2.side = Side.LEFT, Side.RIGHT
 
 
-def _assign_3pin_switch_sides(
-    comp: Component,
-    pins: List[Pin],
-    pin_peer_map: Dict[Tuple[str, str], List[str]],
-    all_comps: Dict[str, Component],
-    use_geometry: bool = False,
-) -> None:
-    """Assigns common terminal to one side and two switch throws to opposite side."""
-    common_pin = None
-    for p in pins:
-        if p.name.upper() in ("2", "COM", "COMMON", "C", "IN"):
-            common_pin = p
-            break
-    if not common_pin:
-        common_pin = pins[1] if len(pins) >= 2 else pins[0]
+def mirror_component(comp: Component) -> bool:
+    """Swap the sides of every pin of a component (horizontal flip).
 
-    throws = [p for p in pins if p != common_pin]
+    Returns False when the source explicitly specified pin sides: those keep
+    their user-given orientation.  This is the single orientation primitive
+    for every component type, symbolic or not.
+    """
+    if any(pin.side_specified for pin in comp.pins.values()):
+        return False
+    for pin in comp.pins.values():
+        if pin.side == Side.LEFT:
+            pin.side = Side.RIGHT
+        elif pin.side == Side.RIGHT:
+            pin.side = Side.LEFT
+        elif pin.side == Side.TOP:
+            pin.side = Side.BOTTOM
+        elif pin.side == Side.BOTTOM:
+            pin.side = Side.TOP
+    return True
 
-    com_peers = pin_peer_map.get((comp.id, common_pin.name), [])
-    throw_peers = []
-    for t in throws:
-        throw_peers.extend(pin_peer_map.get((comp.id, t.name), []))
 
-    if use_geometry:
-        com_comps = [all_comps[cid] for cid in com_peers if cid in all_comps and cid != comp.id]
-        thr_comps = [all_comps[cid] for cid in throw_peers if cid in all_comps and cid != comp.id]
-        com_dx = (sum(c.center.x for c in com_comps) / len(com_comps) - comp.center.x) if com_comps else None
-        thr_dx = (sum(c.center.x for c in thr_comps) / len(thr_comps) - comp.center.x) if thr_comps else None
+def resolve_equivalent_pins(schematic) -> None:
+    """Bind connections to the nearest of several equivalent component pins.
 
-        if com_dx is not None and com_dx > 10.0:
-            common_pin.side = Side.RIGHT
-            for t in throws:
-                t.side = Side.LEFT
-            return
-        if thr_dx is not None and thr_dx < -10.0:
-            common_pin.side = Side.RIGHT
-            for t in throws:
-                t.side = Side.LEFT
-            return
-
-    common_pin.side = Side.LEFT
-    for t in throws:
-        t.side = Side.RIGHT
+    Components may expose the same pin name twice (for example two GND pads).
+    The connection is then assigned to the geometrically nearest instance,
+    evaluated against the centres of its peer components in the net.  This is
+    pure geometry; no pin name, net name or component kind is involved.
+    """
+    for net in schematic.nets:
+        for conn in net.connections:
+            comp = schematic.components.get(conn.component_id)
+            if not comp:
+                continue
+            matching = comp.get_pins_by_name(conn.pin_name)
+            if len(matching) <= 1:
+                if matching:
+                    conn.pin_id = matching[0].id
+                continue
+            peer_points = []
+            for peer_id in conn.peer_component_ids:
+                peer = schematic.components.get(peer_id)
+                if peer and peer.id != comp.id:
+                    peer_points.append(peer.center)
+            if not peer_points:
+                peer_points = [
+                    schematic.components[c.component_id].center
+                    for c in net.connections
+                    if c.component_id != comp.id and c.component_id in schematic.components
+                ]
+            if peer_points:
+                pin = min(matching, key=lambda p: min(p.position.manhattan_to(q) for q in peer_points))
+            else:
+                pin = matching[0]
+            conn.pin_id = pin.id
 
 
 def _choose_pin_side(

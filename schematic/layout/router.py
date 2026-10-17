@@ -26,6 +26,7 @@ from schematic.models import (
     WireSegment,
     snap_to_grid,
 )
+from schematic.semantics import is_ground, is_power, is_supply_like
 
 BEND_PENALTY = 80.0
 STEP_COST = 20.0
@@ -50,6 +51,19 @@ class SchematicRouter:
         self.pin_corridor_info: Dict[Tuple[float, float], Set[Tuple[str, str]]] = {}
 
     def route(self) -> None:
+        """Route every net from scratch and store the result on the schematic."""
+        self.prepare()
+        self.route_nets(self.sorted_nets)
+        self.assemble()
+
+    def prepare(self) -> None:
+        """Build canvas bounds, obstacles, pin corridors and the net order.
+
+        Splitting preparation from routing allows callers to route only a
+        subset of nets while already routed nets act as fixed occupancy (see
+        :meth:`load_existing_routes`).  ``route()`` keeps the original
+        all-at-once behaviour.
+        """
         self.segments.clear()
         self.junctions.clear()
         self.edge_occupant.clear()
@@ -57,15 +71,16 @@ class SchematicRouter:
         self.blocked_nodes.clear()
 
         comps = list(self.schematic.components.values())
+        self.sorted_nets: List[Net] = []
         if not comps:
             return
 
         # 1. Define routing canvas bounds with margin
         pad = 160.0
-        min_x = snap_to_grid(min(c.x for c in comps) - pad, GRID_SIZE)
-        max_x = snap_to_grid(max(c.x + c.width for c in comps) + pad, GRID_SIZE)
-        min_y = snap_to_grid(min(c.y for c in comps) - pad, GRID_SIZE)
-        max_y = snap_to_grid(max(c.y + c.height for c in comps) + pad, GRID_SIZE)
+        self.min_x = snap_to_grid(min(c.x for c in comps) - pad, GRID_SIZE)
+        self.max_x = snap_to_grid(max(c.x + c.width for c in comps) + pad, GRID_SIZE)
+        self.min_y = snap_to_grid(min(c.y for c in comps) - pad, GRID_SIZE)
+        self.max_y = snap_to_grid(max(c.y + c.height for c in comps) + pad, GRID_SIZE)
 
         # 2. Block nodes strictly within component bodies
         for c in comps:
@@ -100,13 +115,12 @@ class SchematicRouter:
                         self.pin_escape_nodes.setdefault(node, set()).add((c.id, p.name))
                     self.pin_corridor_info.setdefault(node, set()).add((c.id, p.name))
 
-        # 3. Detect topological buses (nets sharing identical non-power terminal components)
-        pwr_names = {"GND", "VSS", "NEG"}
+        # 3. Detect topological buses (nets sharing identical terminal components).
+        #    Supply/return names only decide whether a shared net is a bus
+        #    corridor or a rail; that one convention lives in `semantics`.
         net_terminals: Dict[str, Tuple[str, ...]] = {}
         for net in self.schematic.nets:
-            if any(p in net.name.upper() for p in pwr_names):
-                continue
-            if any(k in net.name.upper() for k in ["3V3", "5V", "VCC", "VIN", "VDD"]) and len(net.connections) >= 3:
+            if is_ground(net.name) or (is_power(net.name) and len(net.connections) >= 3):
                 continue
             cids = tuple(sorted({conn.component_id for conn in net.connections}))
             if len(cids) >= 2:
@@ -128,99 +142,142 @@ class SchematicRouter:
         self.bus_guide_edges: Dict[str, Set[Tuple[Tuple[float, float], Tuple[float, float]]]] = {}
 
         # 4. Route topology-derived point-to-point bundles first so their paths
-        #    stay parallel, then shared rails, ordinary buses, and returns.
-        def net_sort_key(net: Net) -> Tuple[int, str, int, str]:
-            nu = net.name.upper()
-            is_return = any(p in nu for p in ["GND", "VSS", "NEG"])
-            is_multi = len(net.connections) >= 3
-            bus_id = self.net_bus.get(net.name, "")
-            is_shared_rail = is_multi and (
-                len(net.connections) >= 5
-                or any(p in nu for p in ["GND", "VSS", "NEG", "3V3", "3.3V", "5V", "VCC", "VDD", "VIN", "VBUS", "BAT", "POWER"])
-            )
-            if bus_id:
-                prio = 0
-            elif is_shared_rail and is_return:
-                prio = 3
-            elif is_shared_rail:
-                prio = 1
-            elif is_multi:
-                prio = 2
-            else:
-                prio = 4
-            return (prio, bus_id, -len(net.connections), net.name)
+        #    stay parallel, then shared rails, ordinary multi-drop nets and
+        #    finally simple point-to-point links.
+        self.sorted_nets = sorted(self.schematic.nets, key=self._net_sort_key)
 
-        sorted_nets = sorted(self.schematic.nets, key=net_sort_key)
+    def _net_sort_key(self, net: Net) -> Tuple:
+        """Deterministic route order derived from topology and geometry.
 
-        for net in sorted_nets:
-            color = self._assign_net_color(net.name)
-            net.color = color
+        Tie-breaks use terminal counts and coordinates instead of labels, so
+        renaming a net never changes the drawing.
+        """
+        conns = len(net.connections)
+        is_multi = conns >= 3
+        is_rail = is_multi and (conns >= 5 or is_supply_like(net.name))
+        if self.net_bus.get(net.name):
+            prio = 0
+        elif is_rail and is_ground(net.name):
+            prio = 3
+        elif is_rail:
+            prio = 1
+        elif is_multi:
+            prio = 2
+        else:
+            prio = 4
+        positions = self._get_net_pin_positions(net)
+        anchor = min(positions) if positions else (float("inf"), float("inf"))
+        terminal_key = tuple(sorted((c.component_id, c.pin_name) for c in net.connections))
+        return (prio, -conns, anchor, terminal_key)
 
-            pins = self._get_net_pin_positions(net)
-            if len(pins) == 1 and len(net.connections) >= 2:
-                # Two components may share a terminal coordinate when a
-                # series part exactly replaces the intervening wire. Preserve
-                # this as an explicit zero-length connection so downstream
-                # consumers can distinguish a direct contact from an unrouted
-                # net; it renders invisibly at the already touching terminals.
-                point = Point(pins[0][0], pins[0][1])
-                self.segments.append(WireSegment(point, point, net.name, color))
+    def route_nets(self, nets: List[Net]) -> None:
+        """Route the given nets in order, appending to the current occupancy."""
+        for net in nets:
+            self.route_net(net)
+
+    def route_net(self, net: Net) -> None:
+        color = self._assign_net_color(net.name)
+        net.color = color
+
+        pins = self._get_net_pin_positions(net)
+        if len(pins) == 1 and len(net.connections) >= 2:
+            # Two components may share a terminal coordinate when a series
+            # part exactly replaces the intervening wire. Preserve this as an
+            # explicit zero-length connection so downstream consumers can
+            # distinguish a direct contact from an unrouted net; it renders
+            # invisibly at the already touching terminals.
+            point = Point(pins[0][0], pins[0][1])
+            self.segments.append(WireSegment(point, point, net.name, color))
+            return
+        if len(pins) < 2:
+            return
+
+        # Temporarily unblock this net's pin terminals
+        for p in pins:
+            self.blocked_nodes.discard(p)
+
+        tree_nodes: Set[Tuple[float, float]] = {pins[0]}
+
+        tree_terminal_set = set(pins)
+        net_edges: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
+
+        unrouted = [p for p in pins if p not in tree_nodes]
+        retry_budget = len(pins) * 2
+        while unrouted and retry_budget > 0:
+            retry_budget -= 1
+            pin = min(unrouted, key=lambda p: min(abs(p[0] - tn[0]) + abs(p[1] - tn[1]) for tn in tree_nodes))
+            unrouted.remove(pin)
+
+            path = self._a_star(pin, tree_nodes, net, self.min_x, self.max_x, self.min_y, self.max_y)
+            if not path:
+                if unrouted:
+                    unrouted.append(pin)
                 continue
-            if len(pins) < 2:
+
+            # Register used edges and nodes
+            for i in range(len(path) - 1):
+                e = _norm_edge(path[i], path[i + 1])
+                self.edge_occupant[e] = net.name
+                net_edges.add(e)
+                tree_nodes.add(path[i])
+                tree_nodes.add(path[i + 1])
+                self.node_occupants.setdefault(path[i], set()).add(net.name)
+                self.node_occupants.setdefault(path[i + 1], set()).add(net.name)
+
+            # Merge contiguous collinear units into long segments (splitting at pin terminals)
+            for s, e in self._merge_path(path, tree_terminal_set):
+                self.segments.append(WireSegment(Point(s[0], s[1]), Point(e[0], e[1]), net.name, color))
+
+        # Re-block current net's pin terminals for subsequent nets
+        for p in pins:
+            self.blocked_nodes.add(p)
+
+        # Topological junction detection:
+        # - Degree >= 3 in wire graph (T-junctions, cross-junctions)
+        # - Degree >= 2 at a component pin terminal (branching at pin)
+        deg: Dict[Tuple[float, float], int] = {}
+        for u, v in net_edges:
+            deg[u] = deg.get(u, 0) + 1
+            deg[v] = deg.get(v, 0) + 1
+
+        for node, d in deg.items():
+            if d >= 3 or (d >= 2 and node in tree_terminal_set):
+                self.junctions.append(WireJunction(point=Point(node[0], node[1]), radius=3.5, net_name=net.name))
+
+    def load_existing_routes(self, wires: List[WireSegment], junctions: List[WireJunction]) -> None:
+        """Adopt already routed nets as fixed occupancy for incremental routing.
+
+        Their wires block collinear reuse and count as visited nodes (so
+        foreign nets may only cross them at right angles) exactly like nets
+        routed during this call.  Bus members additionally contribute guide
+        edges so later members stay parallel.
+        """
+        self.segments = list(wires)
+        self.junctions = list(junctions)
+        for wire in wires:
+            if wire.start == wire.end:
                 continue
+            dx = wire.end.x - wire.start.x
+            dy = wire.end.y - wire.start.y
+            steps = int(round((abs(dx) + abs(dy)) / GRID_SIZE))
+            if steps <= 0:
+                continue
+            step_x = dx / steps
+            step_y = dy / steps
+            bus_id = self.net_bus.get(wire.net_name)
+            guide = self.bus_guide_edges.setdefault(bus_id, set()) if bus_id else None
+            node = (round(wire.start.x, 1), round(wire.start.y, 1))
+            self.node_occupants.setdefault(node, set()).add(wire.net_name)
+            for _ in range(steps):
+                nxt = (round(node[0] + step_x, 1), round(node[1] + step_y, 1))
+                edge = _norm_edge(node, nxt)
+                self.edge_occupant[edge] = wire.net_name
+                self.node_occupants.setdefault(nxt, set()).add(wire.net_name)
+                if guide is not None:
+                    guide.add(edge)
+                node = nxt
 
-            # Temporarily unblock this net's pin terminals
-            for p in pins:
-                self.blocked_nodes.discard(p)
-
-            tree_nodes: Set[Tuple[float, float]] = {pins[0]}
-
-            tree_terminal_set = set(pins)
-            net_edges: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
-
-            unrouted = [p for p in pins if p not in tree_nodes]
-            retry_budget = len(pins) * 2
-            while unrouted and retry_budget > 0:
-                retry_budget -= 1
-                pin = min(unrouted, key=lambda p: min(abs(p[0] - tn[0]) + abs(p[1] - tn[1]) for tn in tree_nodes))
-                unrouted.remove(pin)
-
-                path = self._a_star(pin, tree_nodes, net, min_x, max_x, min_y, max_y)
-                if not path:
-                    if unrouted:
-                        unrouted.append(pin)
-                    continue
-
-                # Register used edges and nodes
-                for i in range(len(path) - 1):
-                    e = _norm_edge(path[i], path[i + 1])
-                    self.edge_occupant[e] = net.name
-                    net_edges.add(e)
-                    tree_nodes.add(path[i])
-                    tree_nodes.add(path[i + 1])
-                    self.node_occupants.setdefault(path[i], set()).add(net.name)
-                    self.node_occupants.setdefault(path[i + 1], set()).add(net.name)
-
-                # Merge contiguous collinear units into long segments (splitting at pin terminals)
-                for s, e in self._merge_path(path, tree_terminal_set):
-                    self.segments.append(WireSegment(Point(s[0], s[1]), Point(e[0], e[1]), net.name, color))
-
-            # Re-block current net's pin terminals for subsequent nets
-            for p in pins:
-                self.blocked_nodes.add(p)
-
-            # Topological junction detection:
-            # - Degree >= 3 in wire graph (T-junctions, cross-junctions)
-            # - Degree >= 2 at a component pin terminal (branching at pin)
-            deg: Dict[Tuple[float, float], int] = {}
-            for u, v in net_edges:
-                deg[u] = deg.get(u, 0) + 1
-                deg[v] = deg.get(v, 0) + 1
-
-            for node, d in deg.items():
-                if d >= 3 or (d >= 2 and node in tree_terminal_set):
-                    self.junctions.append(WireJunction(point=Point(node[0], node[1]), radius=3.5, net_name=net.name))
-
+    def assemble(self) -> None:
         self.schematic.wires = self.segments
         self.schematic.junctions = self.junctions
 
