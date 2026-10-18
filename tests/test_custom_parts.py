@@ -1,6 +1,7 @@
 """Tests for custom graphical parts (Fritzing-style) and coordinate pins."""
 
 import unittest
+import re
 from schematic import parse_schematic, layout_schematic, render_schematic_to_svg
 from schematic.layout.config import LayoutConfig
 from schematic.layout.pin_allocator import rotate_component_90, size_and_place_pins
@@ -9,6 +10,32 @@ from schematic.models import GRID_SIZE, Point, Side
 
 
 class TestCustomParts(unittest.TestCase):
+    def test_custom_bottom_pin_labels_use_separate_lanes(self):
+        text = """
+part Board:
+  image: parts/board.png
+  size: 8x4
+  pins:
+    VIN: 1, 4
+    GND: 2, 4
+    VIN-: 3, 4
+    ALRT: 4, 4
+
+Board1: Board
+Peer: Peer
+  pins: A
+Board1.VIN -> Peer.A
+"""
+        sch = parse_schematic(text)
+        layout_schematic(sch)
+        svg = render_schematic_to_svg(sch)
+        labels = re.findall(
+            r'<text x="[^"]+" y="([^"]+)" text-anchor="middle"[^>]*>(VIN|GND|VIN-|ALRT)</text>',
+            svg,
+        )
+        self.assertEqual(len(labels), 4)
+        self.assertGreater(len({y for y, _ in labels}), 1)
+
     def test_parse_part_template_and_instantiation(self):
         text = """
 part ESP32:
@@ -245,6 +272,39 @@ Board1.B -> Peer.P2
         Placer(sch, config=LayoutConfig(), orientation_overrides={"Board1": True},
                keep_positions=True).place("layered", search=False)
         self.assertEqual(sch.components["Board1"].rotation, 0)
+
+
+    def test_duplicate_pin_names_in_custom_part_and_best_selection(self):
+        text = """
+part CustomMCU:
+  image: parts/mcu.png
+  size: 10x10
+  pins:
+    GND: 1, 2
+    GND: 8, 2
+    GND: 8, 8
+    5V: 1, 9
+    5V: 8, 9
+
+MCU: CustomMCU
+LeftLoad: Resistor
+  pins: 1, 2
+RightLoad: Resistor
+  pins: 1, 2
+
+LeftLoad.1 -> MCU.GND
+RightLoad.1 -> MCU.5V
+"""
+        sch = parse_schematic(text)
+        mcu = sch.components["MCU"]
+        self.assertEqual(len([p for p in mcu.pins.values() if p.name == "GND"]), 3)
+        self.assertEqual(len([p for p in mcu.pins.values() if p.name == "5V"]), 2)
+        res = layout_schematic(sch)
+        self.assertEqual(res.report.violation_count, 0)
+        svg = render_schematic_to_svg(sch)
+        # Verify rendered text shows 'GND' and '5V' without internal '#2' suffixes
+        self.assertIn(">GND<", svg)
+        self.assertNotIn(">GND#2<", svg)
 
 
 if __name__ == "__main__":

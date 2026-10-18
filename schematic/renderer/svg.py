@@ -387,12 +387,37 @@ class SvgRenderer:
             f'font-weight="700" fill="{t.text_title}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">{html.escape(comp.id)}</text>'
         )
         # Pins
+        label_lanes = self._custom_pin_label_lanes(comp)
         for pin in comp.pins.values():
-            parts.append(self._render_custom_pin(pin))
+            parts.append(self._render_custom_pin(pin, label_lanes.get(pin.id, 0)))
         parts.append("</g>")
         return "\n".join(parts)
 
-    def _render_custom_pin(self, pin: Pin) -> str:
+    def _custom_pin_label_lanes(self, comp: Component) -> Dict[str, int]:
+        """Assign lanes so adjacent custom-part captions do not overlap horizontally.
+        Pins on LEFT and RIGHT sides are stacked vertically and sit directly at their pin position.
+        Pins on TOP and BOTTOM sides may overlap horizontally if adjacent, so they can use alternating lanes."""
+        lanes: Dict[str, int] = {p.id: 0 for p in comp.pins.values()}
+        for side in (Side.TOP, Side.BOTTOM):
+            pins = [p for p in comp.pins.values() if p.side == side and p.display_name]
+            pins.sort(key=lambda p: (p.position.x, p.order, p.id))
+            occupied: List[List[Tuple[float, float]]] = []
+            for pin in pins:
+                width = max(18.0, len(pin.display_name) * 5.4)
+                interval = (pin.position.x - width / 2.0 - 3.0,
+                            pin.position.x + width / 2.0 + 3.0)
+                for lane, intervals in enumerate(occupied):
+                    if all(interval[1] <= lo or hi <= interval[0]
+                           for lo, hi in intervals):
+                        lanes[pin.id] = lane
+                        intervals.append(interval)
+                        break
+                else:
+                    lanes[pin.id] = len(occupied)
+                    occupied.append([interval])
+        return lanes
+
+    def _render_custom_pin(self, pin: Pin, lane: int = 0) -> str:
         t = self.t
         parts = []
         # 1. Lead line from pin pad on graphic to terminal
@@ -416,16 +441,16 @@ class SvgRenderer:
         # 4. Pin label text
         if pin.display_name:
             if pin.side == Side.LEFT:
-                tx, ty, anchor = pin.position.x - 6.0, pin.position.y + 3.5, "end"
+                tx, ty, anchor = pin.position.x - 6.0, pin.position.y + 3.5 + lane * 12.0, "end"
             elif pin.side == Side.RIGHT:
-                tx, ty, anchor = pin.position.x + 6.0, pin.position.y + 3.5, "start"
+                tx, ty, anchor = pin.position.x + 6.0, pin.position.y + 3.5 + lane * 12.0, "start"
             elif pin.side == Side.TOP:
-                tx, ty, anchor = pin.position.x, pin.position.y - 6.0, "middle"
+                tx, ty, anchor = pin.position.x, pin.position.y - 6.0 - lane * 12.0, "middle"
             else:
-                tx, ty, anchor = pin.position.x, pin.position.y + 14.0, "middle"
+                tx, ty, anchor = pin.position.x, pin.position.y + 14.0 + lane * 12.0, "middle"
             parts.append(
                 f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" '
-                f'font-size="9" font-weight="600" fill="{t.text_pin}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">'
+                f'font-size="8" font-weight="600" fill="{t.text_pin}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">'
                 f'{html.escape(pin.display_name)}</text>'
             )
         return "\n".join(parts)

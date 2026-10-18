@@ -237,7 +237,11 @@ class SchematicParser:
             comp.image_rect = part.image_rect
         if part.rotatable is not None and not comp.rotatable_explicit:
             comp.rotatable = part.rotatable
-        for p_name, (gx, gy, side_enum) in part.pins.items():
+        # Clear placeholder pins created on-the-fly by connection lines before the part was applied
+        comp.pins = {k: v for k, v in comp.pins.items() if v.grid_x is not None or v.side_specified}
+
+        pin_source = part.pin_list if part.pin_list else [(k, v[0], v[1], v[2]) for k, v in part.pins.items()]
+        for p_name, gx, gy, side_enum in pin_source:
             lbl_m = re.match(r"^([^\(\)]+)(?:\((.*)\))?$", p_name)
             if lbl_m and lbl_m.group(2):
                 base_name = lbl_m.group(1).strip()
@@ -246,24 +250,14 @@ class SchematicParser:
                 base_name = p_name
                 base_label = ""
 
-            p = comp.get_pin(base_name) or comp.get_pin(p_name)
-            if p is None:
-                comp.add_pin(
-                    base_name,
-                    label=base_label,
-                    grid_x=gx,
-                    grid_y=gy,
-                    side=side_enum or Side.LEFT,
-                    side_specified=bool(side_enum),
-                )
-            else:
-                p.grid_x = gx
-                p.grid_y = gy
-                if base_label and not p.label:
-                    p.label = base_label
-                if side_enum:
-                    p.side = side_enum
-                    p.side_specified = True
+            comp.add_pin(
+                base_name,
+                label=base_label,
+                grid_x=gx,
+                grid_y=gy,
+                side=side_enum or Side.LEFT,
+                side_specified=bool(side_enum),
+            )
 
     def _parse_dsl(self, text: str) -> None:
         lines = text.splitlines()
@@ -425,7 +419,7 @@ class SchematicParser:
                         p_label = ""
 
                     if current_part is not None:
-                        current_part.pins[p_raw] = (gx, gy, side_enum)
+                        current_part.add_pin(p_raw, gx, gy, side_enum)
                         continue
                     elif current_comp is not None:
                         current_comp.add_pin(p_name, label=p_label, grid_x=gx, grid_y=gy, side=side_enum or Side.LEFT, side_specified=bool(side_enum))

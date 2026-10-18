@@ -408,7 +408,12 @@ class PartTemplate:
     grid_width: int = 0
     grid_height: int = 0
     pins: Dict[str, Tuple[int, int, Optional[Side]]] = field(default_factory=dict)
+    pin_list: List[Tuple[str, int, int, Optional[Side]]] = field(default_factory=list)
     rotatable: Optional[bool] = None
+
+    def add_pin(self, p_raw: str, gx: int, gy: int, side: Optional[Side] = None) -> None:
+        self.pins[p_raw] = (gx, gy, side)
+        self.pin_list.append((p_raw, gx, gy, side))
 
 
 @dataclass
