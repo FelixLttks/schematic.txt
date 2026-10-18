@@ -243,15 +243,28 @@ class SvgRenderer:
         if k == "switch" and len(comp.pins) == 3:
             parts.extend(self._render_spdt(comp))
         else:
-            length = comp.height if vertical else comp.width
-            rotate = " rotate(90)" if vertical else ""
-            # Diodes point from the left / top pin to the right / bottom pin.
-            flip = ""
-            if k in ("diode", "led"):
-                first = self._first_pin(comp)
-                if first is not None and first.name.upper() in ("K", "CATHODE", "-"):
-                    flip = " scale(-1, 1)"
-            parts.append(f'<g transform="translate({cx:.1f}, {cy:.1f}){rotate}{flip}">')
+            if k in ("diode", "led") and len(comp.pins) == 2:
+                # Direct vector-driven rotation from Anode to Cathode:
+                # Symbol body is drawn pointing from -half (Anode) to +half (Cathode) along +X.
+                pins_list = list(comp.pins.values())
+                k_pin = next((p for p in pins_list if p.name.upper() in ("K", "CATHODE", "-", "2")), None)
+                a_pin = next((p for p in pins_list if p.name.upper() in ("A", "ANODE", "+", "1")), None)
+                if k_pin is None and a_pin is not None:
+                    k_pin = next(p for p in pins_list if p != a_pin)
+                elif a_pin is None and k_pin is not None:
+                    a_pin = next(p for p in pins_list if p != k_pin)
+                elif a_pin is None and k_pin is None:
+                    a_pin, k_pin = (pins_list[0], pins_list[1]) if pins_list[0].position.x <= pins_list[1].position.x else (pins_list[1], pins_list[0])
+
+                dx = k_pin.position.x - a_pin.position.x
+                dy = k_pin.position.y - a_pin.position.y
+                angle = round(math.degrees(math.atan2(dy, dx)))
+                length = math.hypot(dx, dy) or (comp.height if vertical else comp.width)
+                parts.append(f'<g transform="translate({cx:.1f}, {cy:.1f}) rotate({angle})">')
+            else:
+                length = comp.height if vertical else comp.width
+                rotate = " rotate(90)" if vertical else ""
+                parts.append(f'<g transform="translate({cx:.1f}, {cy:.1f}){rotate}">')
             parts.extend(self._symbol_body(k, comp, length))
             parts.append("</g>")
             if vertical:

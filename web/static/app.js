@@ -11,7 +11,9 @@
   const btnCompile = document.getElementById("btn-compile");
   const btnResetZoom = document.getElementById("btn-reset-zoom");
   const btnDownload = document.getElementById("btn-download");
+  const btnDownloadPng = document.getElementById("btn-download-png");
   const btnTheme = document.getElementById("btn-theme");
+  const renderProgressBar = document.getElementById("render-progress-bar");
   const exampleSelect = document.getElementById("example-select");
   const effortSelect = document.getElementById("effort-select");
   const canvasWrapper = document.getElementById("canvas-wrapper");
@@ -58,6 +60,7 @@
     }
 
     setStatus("compiling", "Rendering...");
+    if (renderProgressBar) renderProgressBar.classList.remove("hidden");
 
     try {
       const resp = await fetch("/api/render", {
@@ -99,6 +102,8 @@
     } catch (err) {
       showError({ message: "Network / Server error: " + err.message });
       setStatus("error", "Server connection error");
+    } finally {
+      if (renderProgressBar) renderProgressBar.classList.add("hidden");
     }
   }
 
@@ -293,6 +298,106 @@
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
+
+  // 4b. Download PNG with custom component images embedded
+  async function exportPng() {
+    if (!currentSvgRaw) return;
+    setStatus("compiling", "Generating PNG...");
+    if (renderProgressBar) renderProgressBar.classList.remove("hidden");
+
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(currentSvgRaw, "image/svg+xml");
+      const svgEl = doc.documentElement;
+
+      // Extract original viewBox or dimensions
+      let viewBox = svgEl.getAttribute("viewBox");
+      let width = parseFloat(svgEl.getAttribute("width"));
+      let height = parseFloat(svgEl.getAttribute("height"));
+
+      if (viewBox) {
+        const parts = viewBox.split(/\s+|,/).map(parseFloat);
+        if (parts.length === 4) {
+          if (!width) width = parts[2];
+          if (!height) height = parts[3];
+        }
+      }
+      if (!width || !height) {
+        width = 1200;
+        height = 800;
+      }
+
+      // Inline all <image> elements as data: URIs so Canvas can draw them without taint or missing assets
+      const images = Array.from(svgEl.querySelectorAll("image"));
+      await Promise.all(
+        images.map(async (img) => {
+          const href = img.getAttribute("href") || img.getAttribute("xlink:href");
+          if (!href || href.startsWith("data:")) return;
+          try {
+            const resp = await fetch(href);
+            const blob = await resp.blob();
+            const dataUri = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            img.setAttribute("href", dataUri);
+            img.setAttribute("xlink:href", dataUri);
+          } catch (e) {
+            console.warn("Could not inline image for PNG export:", href, e);
+          }
+        })
+      );
+
+      const inlinedSvgText = new XMLSerializer().serializeToString(svgEl);
+      const svgBlob = new Blob([inlinedSvgText], { type: "image/svg+xml;charset=utf-8" });
+      const svgUrl = URL.createObjectURL(svgBlob);
+
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = svgUrl;
+      });
+
+      // Render at 2x pixel ratio for crisp typography and lines
+      const scale = 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      const ctx = canvas.getContext("2d");
+
+      // Fill background matching current theme
+      ctx.fillStyle = darkTheme ? "#0f172a" : "#f8fafc";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(svgUrl);
+
+      canvas.toBlob((pngBlob) => {
+        if (!pngBlob) return;
+        const pngUrl = URL.createObjectURL(pngBlob);
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = "schematic.png";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(pngUrl);
+        setStatus("ready", "PNG exported");
+      }, "image/png");
+    } catch (err) {
+      console.error("PNG export error:", err);
+      setStatus("error", "PNG export failed: " + err.message);
+    } finally {
+      if (renderProgressBar) renderProgressBar.classList.add("hidden");
+    }
+  }
+
+  if (btnDownloadPng) {
+    btnDownloadPng.addEventListener("click", exportPng);
+  }
 
   // 5. Theme Toggle
   effortSelect.addEventListener("change", () => compileSchematic());
