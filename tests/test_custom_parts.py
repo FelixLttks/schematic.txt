@@ -2,6 +2,9 @@
 
 import unittest
 from schematic import parse_schematic, layout_schematic, render_schematic_to_svg
+from schematic.layout.config import LayoutConfig
+from schematic.layout.pin_allocator import rotate_component_90, size_and_place_pins
+from schematic.layout.placer import Placer
 from schematic.models import GRID_SIZE, Point, Side
 
 
@@ -131,6 +134,117 @@ ESP.3V3 -> Sensor.VCC
         expected_y = esp.y - 8.0
         svg = render_schematic_to_svg(sch)
         self.assertIn(f'x="{expected_x:.1f}" y="{expected_y:.1f}" width="204.0" height="376.0"', svg)
+
+    def test_rotatable_default_and_explicit_disable(self):
+        text = """
+part Fixed:
+  image: parts/fixed.png
+  size: 6x3
+  rotatable: false
+  pins:
+    A: 0, 1
+    B: 5, 1
+
+part Free:
+  image: parts/free.png
+  size: 4x2
+  pins:
+    A: 0, 1
+    B: 3, 1
+
+Fixed1: Fixed
+Free1: Free
+Inline: Free [rotatable=false]
+"""
+        sch = parse_schematic(text)
+        self.assertFalse(sch.parts["Fixed"].rotatable)
+        self.assertFalse(sch.components["Fixed1"].rotatable)
+        self.assertTrue(sch.components["Free1"].rotatable)
+        self.assertFalse(sch.components["Inline"].rotatable)
+
+    def test_rotation_transforms_grid_and_geometry(self):
+        text = """
+part Board:
+  image: parts/board.png
+  size: 4x5
+  pins:
+    A: 0, 1
+    B: 3, 2
+
+Board1: Board
+"""
+        sch = parse_schematic(text)
+        board = sch.components["Board1"]
+        size_and_place_pins(board)
+        self.assertEqual((board.width, board.height), (80.0, 100.0))
+
+        rotate_component_90(board, clockwise=True)
+        size_and_place_pins(board)
+        self.assertEqual(board.rotation, 90)
+        self.assertEqual((board.grid_width, board.grid_height), (5, 4))
+        self.assertEqual((board.width, board.height), (100.0, 80.0))
+        self.assertEqual((board.pins["A"].grid_x, board.pins["A"].grid_y), (4, 0))
+        self.assertEqual((board.pins["B"].grid_x, board.pins["B"].grid_y), (3, 3))
+        self.assertEqual(board.pins["A"].side, Side.TOP)
+        self.assertEqual(board.pins["B"].side, Side.BOTTOM)
+        svg = render_schematic_to_svg(sch)
+        self.assertIn("rotate(90 ", svg)
+
+    def test_image_parts_get_a_rotation_candidate_by_default(self):
+        text = """
+part Module:
+  image: parts/module.png
+  size: 8x4
+  pins:
+    A: 0, 1
+    B: 0, 2
+    C: 0, 3
+
+Module1: Module
+Peer: Peer
+  pins: P1, P2, P3
+
+Module1.A -> Peer.P1
+Module1.B -> Peer.P2
+Module1.C -> Peer.P3
+"""
+        sch = parse_schematic(text)
+        placer = Placer(sch, config=LayoutConfig())
+        placer.place("layered", search=False)
+        variants = placer.orientation_variants()
+        self.assertIn("Module1", [cid for cid, _ in variants])
+
+        sch = parse_schematic(text.replace("size: 8x4", "size: 8x4\n  rotatable: false"))
+        placer = Placer(sch, config=LayoutConfig())
+        placer.place("layered", search=False)
+        self.assertNotIn("Module1", [cid for cid, _ in placer.orientation_variants()])
+
+    def test_orientation_override_rotates_part_unless_disabled(self):
+        text = """
+part Board:
+  image: parts/board.png
+  size: 4x5
+  pins:
+    A: 0, 1
+    B: 3, 2
+
+Board1: Board
+Peer: Peer
+  pins: P1, P2
+Board1.A -> Peer.P1
+Board1.B -> Peer.P2
+"""
+        sch = parse_schematic(text)
+        Placer(sch, config=LayoutConfig(), orientation_overrides={"Board1": True},
+               keep_positions=True).place("layered", search=False)
+        board = sch.components["Board1"]
+        self.assertEqual(board.rotation, 90)
+        self.assertEqual((board.width, board.height), (100.0, 80.0))
+
+        sch = parse_schematic(text.replace("size: 4x5", "size: 4x5\n  rotatable: false"))
+        Placer(sch, config=LayoutConfig(), orientation_overrides={"Board1": True},
+               keep_positions=True).place("layered", search=False)
+        self.assertEqual(sch.components["Board1"].rotation, 0)
 
 
 if __name__ == "__main__":

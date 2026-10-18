@@ -39,6 +39,15 @@ OPPOSITE: Dict[Side, Side] = {
     Side.BOTTOM: Side.TOP,
 }
 
+# 90° clockwise / counter-clockwise edge mapping (screen coordinates).
+SIDE_CW: Dict[Side, Side] = {
+    Side.LEFT: Side.TOP,
+    Side.TOP: Side.RIGHT,
+    Side.RIGHT: Side.BOTTOM,
+    Side.BOTTOM: Side.LEFT,
+}
+SIDE_CCW: Dict[Side, Side] = {v: k for k, v in SIDE_CW.items()}
+
 _POWER_WORDS = ("VCC", "3V3", "5V", "VIN", "VDD", "VBUS", "VBAT", "+")
 _GROUND_WORDS = ("GND", "VSS")
 
@@ -230,6 +239,28 @@ def _place_standard_pins(
 def _set(pin: Pin, x: float, y: float) -> None:
     pin.lead_start = Point(x, y)
     pin.position = Point(x, y)
+
+
+def rotate_component_90(comp: Component, clockwise: bool = True) -> None:
+    """Rotates a part by 90° around its centre, in place.
+
+    Pin grid coordinates, the grid footprint and the pin sides are transformed
+    together, so a later ``size_and_place_pins`` derives the rotated geometry
+    from the same data.  The image itself stays defined in its unrotated
+    local frame; the renderer rotates it around the component centre.
+    """
+    side_map = SIDE_CW if clockwise else SIDE_CCW
+    gw, gh = comp.grid_width, comp.grid_height
+    if comp.image and gw > 0 and gh > 0:
+        for pin in comp.pins.values():
+            if pin.grid_x is None or pin.grid_y is None:
+                continue
+            gx, gy = pin.grid_x, pin.grid_y
+            pin.grid_x, pin.grid_y = (gh - gy, gx) if clockwise else (gy, gw - gx)
+        comp.grid_width, comp.grid_height = gh, gw
+    for pin in comp.pins.values():
+        pin.side = side_map[pin.side]
+    comp.rotation = (comp.rotation + (90 if clockwise else -90)) % 360
 
 
 def orient_two_pin(comp: Component, first: Pin, first_side: Side) -> None:

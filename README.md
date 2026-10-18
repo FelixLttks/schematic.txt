@@ -132,6 +132,26 @@ Fuse: Inline Fuse
   pins: IN, OUT
 ```
 
+### Eigene Grafik-Bauteile (Fritzing-Stil)
+Bauteile lassen sich mit einem Bild und rastergenauen Pin-Koordinaten definieren. Das Layout darf sie standardmäßig um 90° drehen, um eine bessere Platzierung zu prüfen; nur mit `rotatable: false` wird das für ein Bauteil explizit abgeschaltet:
+
+```text
+part INA228:
+  image: parts/image-Photoroom.png
+  size: 11x9
+  image_rect: 8, 17, 204, 164
+  # rotatable: false        # optional: Rotation für dieses Bauteil verbieten
+  pins:
+    VIN: 2, 8
+    GND: 3, 8
+    SDA: 5, 8
+    SCL: 4, 8
+
+INA228: INA228
+```
+
+Die Rotation wirkt auch auf normale Bauteile (nicht nur auf Bilder) und wird pro Bauteil nur dann übernommen, wenn die geroutete Zeichnung dadurch messbar lesbarer wird.
+
 ### YAML-Format (alternativ)
 ```yaml
 components:

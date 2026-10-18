@@ -549,6 +549,17 @@ Measured coherence (`parallelism_score`) on the four examples rose from
   orientation gain.  The trials are spread over groups first;
   `orientation_candidates` caps them (1 `fast`, 2 `balanced`, 4 `thorough`).
   This replaces kind-specific orientation rules such as "diodes horizontal".
+* **Rotation candidates**: the same local refinement now also rotates any
+  other part by 90° (clockwise or counter-clockwise, whichever direction
+  faces its peers better).  Graphical/image parts are always considered
+  first, because their pin layout is what makes rotation worthwhile; other
+  parts are tried when their pins face away from their wiring.  Every part
+  is rotatable by default; a declaration can opt out with
+  `rotatable: false` (on a `part` template or on a component).
+  `rotation_candidates` caps the trials (1 `fast`, 4 `balanced`,
+  6 `thorough`).  Positions are kept and the group is legalised again, so a
+  rotated part can push its neighbours aside without re-optimising the whole
+  drawing.
 * **Rip-up passes** run on the normal winner before orientation refinement;
   a close orientation variant gets the same treatment before it may replace
   it (`orientation_reroute_margin`, `orientation_accept_margin`).
@@ -580,8 +591,10 @@ Measured coherence (`parallelism_score`) on the four examples rose from
 ## 13. Known limitations and pathological cases
 
 * **Runtime.** Pure Python.  `balanced` lays out the large example
-  (13 parts, 22 nets) in about 6 s, `fast` in about 2 s; small drawings take
-  well under a second.  Larger, unstructured inputs grow quickly: random
+  (13 parts, 22 nets) in about 9 s, `fast` in about 2.5 s; small drawings take
+  well under a second.  The default rotation probes account for the larger
+  share: every additional rotation candidate routes the whole drawing.
+  Larger, unstructured inputs grow quickly: random
   netlists with 18 / 25 parts took 6.5 s / 18 s with `balanced`, 30 parts
   5.5 s with `fast` (all without violations).  The placement estimate's
   crossing count is quadratic in connections and A* cost grows with the grid;

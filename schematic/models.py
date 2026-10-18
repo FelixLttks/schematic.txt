@@ -164,6 +164,9 @@ class Component:
     image_rect: Optional[Tuple[float, float, float, float]] = None
     grid_width: int = 0
     grid_height: int = 0
+    rotatable: bool = True
+    rotatable_explicit: bool = False
+    rotation: int = 0
 
     def __post_init__(self):
         if not self.kind and self.type_name:
@@ -405,6 +408,7 @@ class PartTemplate:
     grid_width: int = 0
     grid_height: int = 0
     pins: Dict[str, Tuple[int, int, Optional[Side]]] = field(default_factory=dict)
+    rotatable: Optional[bool] = None
 
 
 @dataclass

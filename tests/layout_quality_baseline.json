@@ -77,6 +77,12 @@
     "bends": 22,
     "fingerprint": "08714a9d0ad72934"
   },
+  "esp32_custom_part": {
+    "readability_score": 55.54,
+    "crossings": 4,
+    "bends": 13,
+    "fingerprint": "fa1ecc663f03793c"
+  },
   "esp32_sd_spi": {
     "readability_score": 67.16,
     "crossings": 0,
@@ -90,10 +96,16 @@
     "fingerprint": "f532d9b554a78eda"
   },
   "example_large": {
-    "readability_score": 45.43,
-    "crossings": 30,
-    "bends": 45,
-    "fingerprint": "314394a0493bdde9"
+    "readability_score": 45.88,
+    "crossings": 28,
+    "bends": 50,
+    "fingerprint": "78a4e9c72f3f454c"
+  },
+  "example_lights": {
+    "readability_score": 32.62,
+    "crossings": 49,
+    "bends": 69,
+    "fingerprint": "a16f5f8bb8fa755e"
   },
   "simple_quickstart": {
     "readability_score": 51.77,

@@ -38,11 +38,13 @@ from schematic.layout.config import DEFAULT_CONFIG, LayoutConfig
 from schematic.layout.estimate import Rect
 from schematic.layout.pin_allocator import (
     OPPOSITE,
+    OUTWARD,
     apply_order,
     default_sides,
     orient_switch,
     orient_two_pin,
     resolve_pin,
+    rotate_component_90,
     size_and_place_pins,
     snap,
     switch_common,
@@ -513,11 +515,13 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
                 else:
                     self._orient_passive(comp, cx, cy, positions)
             elif comp.kind == "switch" and len(comp.pins) == 3:
-                common = switch_common(comp)
-                pts = self._peer_points(cid, common.id, positions)
-                if pts:
-                    mx = sum(p[0] for p in pts) / len(pts)
-                    orient_switch(comp, Side.LEFT if mx < cx else Side.RIGHT)
+                if comp.rotatable:
+                    common = switch_common(comp)
+                    pts = self._peer_points(cid, common.id, positions)
+                    if pts:
+                        mx = sum(p[0] for p in pts) / len(pts)
+                        orient_switch(comp, Side.LEFT if mx < cx else Side.RIGHT)
+                # A non-rotatable switch keeps its declared / default orientation.
             else:
                 hub = self.comps[g.hub]
                 hub_cx = positions[g.hub][0] + hub.width / 2.0
@@ -628,6 +632,8 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
     def _orient_passive(self, comp: Component, cx: float, cy: float, positions: Dict[str, Pt]) -> None:
         if any(p.side_specified for p in comp.pins.values()):
             return
+        if not comp.rotatable:
+            return
         p1, p2 = list(comp.pins.values())
         pts1 = self._peer_points(comp.id, p1.id, positions)
         pts2 = self._peer_points(comp.id, p2.id, positions)
@@ -667,7 +673,7 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
         anchor = self.comps[sat.anchor]
         apin = anchor.pins[sat.anchor_pin]
         if not (near.side_specified or far.side_specified):
-            if _can_be_vertical(comp):
+            if _can_be_vertical(comp) and comp.rotatable:
                 orient_two_pin(comp, near, Side.BOTTOM if sat.above else Side.TOP)
             else:
                 orient_two_pin(comp, near, Side.LEFT if apin.side != Side.LEFT else Side.RIGHT)
@@ -701,14 +707,17 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
 
     # ==================================================== orientation variants
     def orientation_variants(self) -> List[Tuple[str, bool]]:
-        """Ambiguous free 2-pin standard parts and the axis worth testing.
+        """Parts whose alternative axis is worth testing, with that axis.
 
-        Expects a placed schematic.  The selection is based on peer
-        directions only; the engine places, routes and scores every returned
-        variant like any other candidate, so this heuristic never has the
-        final word.  The most ambiguous parts come first.
+        Expects a placed schematic.  For free 2-pin standard parts the axis is
+        the symbol orientation (``True`` = vertical); for every other
+        rotatable part ``True`` means 90° clockwise and ``False`` 90°
+        counter-clockwise.  The selection is based on peer directions only;
+        the engine places, routes and scores every returned variant like any
+        other candidate, so this heuristic never has the final word.  The most
+        promising parts come first.
         """
-        if self.cfg.orientation_candidates <= 0:
+        if self.cfg.orientation_candidates <= 0 and self.cfg.rotation_candidates <= 0:
             return []
         self._resolve_connections()
         self._classify()
@@ -721,41 +730,100 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
             for cid in g.comps:
                 hubs[cid] = g.hub
         scored = []
+        rotations = []
         for cid, comp in self.comps.items():
-            if cid in self.sats or not (comp.is_standard and len(comp.pins) == 2):
+            if cid in self.sats or cid in self.isolated:
                 continue
-            if any(p.side_specified for p in comp.pins.values()) or not _can_be_vertical(comp):
+            if not comp.rotatable:
                 continue
-            self._hub = hubs.get(cid)
-            if not self._macro_flip_ambiguous(cid, positions):
+            if comp.image:
+                if self.cfg.rotation_candidates > 0:
+                    gain_cw, connected = self._rotation_gain(cid, positions, clockwise=True)
+                    gain_ccw, _ = self._rotation_gain(cid, positions, clockwise=False)
+                    clockwise = gain_cw >= gain_ccw
+                    if connected >= 2:
+                        rotations.append((0, -max(gain_cw, gain_ccw), list(self.comps).index(cid),
+                                          cid, clockwise, hubs.get(cid, cid)))
                 continue
-            p1, p2 = list(comp.pins.values())
-            vertical = p1.side in (Side.TOP, Side.BOTTOM) and p2.side in (Side.TOP, Side.BOTTOM)
-            c1 = self._peer_centroid(cid, p1.id, positions)
-            c2 = self._peer_centroid(cid, p2.id, positions)
-            both = False
-            ratio = 99.0
-            if c1 is not None and c2 is not None:
-                cx, cy = comp.x + comp.width / 2.0, comp.y + comp.height / 2.0
-                both = (c1[0] - cx) * (c2[0] - cx) < 0 and (c1[1] - cy) * (c2[1] - cy) < 0
-                dx, dy = abs(c2[0] - c1[0]), abs(c2[1] - c1[1])
-                ratio = max(dx, dy) / max(1.0, min(dx, dy))
-            scored.append((0 if both else 1, ratio, list(self.comps).index(cid),
-                           cid, not vertical, hubs.get(cid, cid)))
+            if comp.is_standard and len(comp.pins) != 2:
+                continue
+            if comp.is_standard:
+                if self.cfg.orientation_candidates <= 0:
+                    continue
+                if any(p.side_specified for p in comp.pins.values()) or not _can_be_vertical(comp):
+                    continue
+                self._hub = hubs.get(cid)
+                if not self._macro_flip_ambiguous(cid, positions):
+                    continue
+                p1, p2 = list(comp.pins.values())
+                vertical = p1.side in (Side.TOP, Side.BOTTOM) and p2.side in (Side.TOP, Side.BOTTOM)
+                c1 = self._peer_centroid(cid, p1.id, positions)
+                c2 = self._peer_centroid(cid, p2.id, positions)
+                both = False
+                ratio = 99.0
+                if c1 is not None and c2 is not None:
+                    cx, cy = comp.x + comp.width / 2.0, comp.y + comp.height / 2.0
+                    both = (c1[0] - cx) * (c2[0] - cx) < 0 and (c1[1] - cy) * (c2[1] - cy) < 0
+                    dx, dy = abs(c2[0] - c1[0]), abs(c2[1] - c1[1])
+                    ratio = max(dx, dy) / max(1.0, min(dx, dy))
+                scored.append((0 if both else 1, ratio, list(self.comps).index(cid),
+                               cid, not vertical, hubs.get(cid, cid)))
+            elif self.cfg.rotation_candidates > 0:
+                gain_cw, connected = self._rotation_gain(cid, positions, clockwise=True)
+                gain_ccw, _ = self._rotation_gain(cid, positions, clockwise=False)
+                clockwise = gain_cw >= gain_ccw
+                gain = max(gain_cw, gain_ccw)
+                if connected >= 2 and gain > 0.0:
+                    rotations.append((1, -gain, list(self.comps).index(cid), cid, clockwise,
+                                      hubs.get(cid, cid)))
         scored.sort(key=lambda e: e[:3])
-        # Spread the limited trials over groups first, then fill up with the
-        # next most ambiguous parts of the same group.
-        limit = self.cfg.orientation_candidates
-        selected = []
-        seen_groups = set()
-        for entry in scored:
-            if entry[5] not in seen_groups and len(selected) < limit:
-                selected.append(entry)
-                seen_groups.add(entry[5])
-        for entry in scored:
-            if entry not in selected and len(selected) < limit:
-                selected.append(entry)
-        return [(entry[3], entry[4]) for entry in selected]
+        rotations.sort(key=lambda e: e[:3])
+
+        def spread(entries, limit):
+            selected = []
+            seen_groups = set()
+            for entry in entries:
+                if entry[-1] not in seen_groups and len(selected) < limit:
+                    selected.append(entry)
+                    seen_groups.add(entry[-1])
+            for entry in entries:
+                if entry not in selected and len(selected) < limit:
+                    selected.append(entry)
+            return selected
+
+        selected = spread(scored, self.cfg.orientation_candidates)
+        variants = [(entry[3], entry[4]) for entry in selected]
+        rotations = spread(rotations, self.cfg.rotation_candidates)
+        variants.extend((entry[3], entry[4]) for entry in rotations)
+        return variants
+
+    def _rotation_gain(self, cid: str, positions: Dict[str, Pt], clockwise: bool) -> Tuple[float, int]:
+        """How much a rotation would reduce pins facing away from their peers.
+
+        Returns the improvement and the number of connected pins considered.
+        A positive value means the rotated part would face its wiring better.
+        """
+        comp = self.comps[cid]
+        cx, cy = comp.x + comp.width / 2.0, comp.y + comp.height / 2.0
+        gain = 0.0
+        connected = 0
+        for pin in comp.pins.values():
+            pts = self._peer_points(cid, pin.id, positions)
+            if not pts:
+                continue
+            connected += 1
+            mx = sum(p[0] for p in pts) / len(pts) - cx
+            my = sum(p[1] for p in pts) / len(pts) - cy
+            length = math.hypot(mx, my)
+            if length < 1e-6:
+                continue
+            dx, dy = OUTWARD[pin.side]
+            before = (dx * mx + dy * my) / length
+            rdx, rdy = (-dy, dx) if clockwise else (dy, -dx)
+            after = (rdx * mx + rdy * my) / length
+            gain -= min(0.0, before)
+            gain += min(0.0, after)
+        return gain, connected
 
     def _macro_flip_ambiguous(self, cid: str, positions: Dict[str, Pt]) -> bool:
         """True when both axes are plausible from the two peer directions.
@@ -787,22 +855,32 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
         return (sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts))
 
     def _apply_orientation_overrides(self) -> None:
-        """Pins an already chosen axis for the parts of a routed candidate.
+        """Pins an already chosen axis/orientation for a routed candidate.
 
         Used by the engine's orientation candidates: the normal heuristic must
         not overwrite the axis that the candidate is meant to test.  Declared
         pin sides always win, and satellites keep their conventional axis.
+        Standard 2-pin parts only change their symbol axis; every other part
+        is rotated physically (90° clockwise for ``True``, counter-clockwise
+        for ``False``) and its geometry recomputed.
         """
         self._forced_orientations.clear()
-        for cid, vertical in self.orientation_overrides.items():
+        for cid, alternative in self.orientation_overrides.items():
             comp = self.comps.get(cid)
-            if comp is None or cid in self.sats:
+            if comp is None or cid in self.sats or not comp.rotatable:
                 continue
-            if not (comp.is_standard and len(comp.pins) == 2):
-                continue
-            if any(p.side_specified for p in comp.pins.values()):
-                continue
-            self._forced_orientations[cid] = vertical
+            if comp.image:
+                rotate_component_90(comp, clockwise=alternative)
+                size_and_place_pins(comp)
+            elif comp.is_standard:
+                if len(comp.pins) != 2:
+                    continue
+                if any(p.side_specified for p in comp.pins.values()):
+                    continue
+                self._forced_orientations[cid] = alternative
+            else:
+                rotate_component_90(comp, clockwise=alternative)
+                size_and_place_pins(comp)
 
     def _force_axis(self, comp: Component, vertical: bool) -> None:
         p1, p2 = list(comp.pins.values())

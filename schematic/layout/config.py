@@ -82,6 +82,7 @@ class LayoutConfig:
     search_shifts: Tuple[float, ...] = (20.0, 60.0, 140.0)  # translation moves (px)
     search_partners: int = 3           # relocation targets: most strongly wired partners
     orientation_candidates: int = 2    # extra routed candidates with a forced 2-pin part orientation
+    rotation_candidates: int = 4       # extra routed candidates that rotate any rotatable part by 90°
     orientation_reroute_margin: float = 2.0  # first-pass gap still worth a rip-up comparison
     orientation_accept_margin: float = 0.0   # minimum final score gain for a local orientation change
     reroute_passes: int = 2            # rip-up-and-reroute passes on the winning candidate
@@ -113,11 +114,13 @@ def config_for_effort(effort: str = "balanced") -> LayoutConfig:
         cfg.search_shifts = (20.0, 60.0)
         cfg.search_partners = 2
         cfg.orientation_candidates = 1
+        cfg.rotation_candidates = 1
         cfg.reroute_passes = 1
     elif effort == "thorough":
         cfg.candidates = (("layered", False), ("layered", True), ("stress", False), ("stress", True))
         cfg.search_sweeps = 6
         cfg.orientation_candidates = 4
+        cfg.rotation_candidates = 6
         cfg.reroute_passes = 4
     elif effort != "balanced":
         raise ValueError(f"unknown effort level {effort!r}; expected one of {', '.join(EFFORT_LEVELS)}")

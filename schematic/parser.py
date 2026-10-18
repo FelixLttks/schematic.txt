@@ -19,6 +19,16 @@ class ParseError(Exception):
         super().__init__(detail)
 
 
+_FALSE_VALUES = {"false", "no", "off", "0", "none", "disabled"}
+
+
+def _as_bool(value: object) -> bool:
+    """Interprets a DSL / YAML value as a boolean flag (default: True)."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in _FALSE_VALUES
+
+
 def parse_pin_ref(token: str, line_num: Optional[int] = None, line_content: Optional[str] = None) -> Tuple[str, str, str]:
     """
     Parses a component and pin reference token.
@@ -152,6 +162,9 @@ class SchematicParser:
                         comp.value = str(comp_info["value"])
                     elif "val" in comp_info:
                         comp.value = str(comp_info["val"])
+                    if "rotatable" in comp_info:
+                        comp.rotatable = _as_bool(comp_info["rotatable"])
+                        comp.rotatable_explicit = True
                     comp.detect_standard_type()
 
                     for side_str, side_enum in [("left", Side.LEFT), ("right", Side.RIGHT), ("top", Side.TOP), ("bottom", Side.BOTTOM)]:
@@ -222,6 +235,8 @@ class SchematicParser:
             comp.grid_height = part.grid_height
         if comp.image_rect is None and part.image_rect is not None:
             comp.image_rect = part.image_rect
+        if part.rotatable is not None and not comp.rotatable_explicit:
+            comp.rotatable = part.rotatable
         for p_name, (gx, gy, side_enum) in part.pins.items():
             lbl_m = re.match(r"^([^\(\)]+)(?:\((.*)\))?$", p_name)
             if lbl_m and lbl_m.group(2):
@@ -307,6 +322,24 @@ class SchematicParser:
                     elif current_comp is not None:
                         current_comp.grid_width = gw
                         current_comp.grid_height = gh
+                continue
+
+            # Check for rotatable declaration: "rotatable: false"
+            rotatable_match = re.match(
+                r"^(?:rotatable|rotate)\s*[:=]\s*"
+                r"(true|false|yes|no|on|off|1|0|enabled|disabled)\s*$",
+                line,
+                re.IGNORECASE,
+            )
+            if rotatable_match:
+                enabled = _as_bool(rotatable_match.group(1))
+                if current_part is not None:
+                    current_part.rotatable = enabled
+                elif current_comp is not None:
+                    current_comp.rotatable = enabled
+                    current_comp.rotatable_explicit = True
+                else:
+                    raise ParseError(f"'{line}' defined without a preceding component or part declaration", line_idx, raw_line)
                 continue
 
             # Check for explicit pin side declarations:
@@ -423,19 +456,19 @@ class SchematicParser:
             if comp_match:
                 comp_id = comp_match.group(1).strip()
                 bracket_attrs = comp_match.group(2)
-                type_name = (comp_match.group(3) or "").strip().rstrip("]")
+                type_name = (comp_match.group(3) or "").strip()
+                inline_attrs = bracket_attrs
+                if "[" in type_name:
+                    b_start = type_name.rfind("[")
+                    inline_b = type_name[b_start + 1:].strip().rstrip("]")
+                    type_name = type_name[:b_start].strip()
+                    inline_attrs = ", ".join(a for a in (bracket_attrs, inline_b) if a) or None
                 current_part = None
                 current_comp = self.schematic.get_or_create_component(comp_id, type_name)
                 if type_name and type_name in self.schematic.parts:
                     self._apply_part_template(current_comp, self.schematic.parts[type_name])
-                if bracket_attrs:
-                    self._parse_inline_comp_attrs(current_comp, bracket_attrs)
-                if "[" in type_name and type_name.endswith("]"):
-                    b_start = type_name.rfind("[")
-                    inline_b = type_name[b_start + 1:-1]
-                    type_name = type_name[:b_start].strip()
-                    current_comp.type_name = type_name
-                    self._parse_inline_comp_attrs(current_comp, inline_b)
+                if inline_attrs:
+                    self._parse_inline_comp_attrs(current_comp, inline_attrs)
                 current_comp.detect_standard_type()
                 continue
 
@@ -458,6 +491,9 @@ class SchematicParser:
                     comp.set_kind(v)
                 elif k in ("value", "val"):
                     comp.value = v
+                elif k in ("rotatable", "rotate"):
+                    comp.rotatable = _as_bool(v)
+                    comp.rotatable_explicit = True
             else:
                 norm = normalize_kind(p)
                 if norm:

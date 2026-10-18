@@ -35,6 +35,8 @@ def schematic_to_dict(sch: Schematic) -> Dict[str, Any]:
                 "y": c.y,
                 "width": c.width,
                 "height": c.height,
+                "rotation": c.rotation,
+                "rotatable": c.rotatable,
                 "pins": [
                     {
                         "id": p.id,
@@ -78,6 +80,8 @@ def schematic_from_dict(data: Dict[str, Any]) -> Schematic:
         comp.type_name = cd.get("type_name", "")
         comp.x, comp.y = cd["x"], cd["y"]
         comp.width, comp.height = cd["width"], cd["height"]
+        comp.rotation = cd.get("rotation", 0)
+        comp.rotatable = cd.get("rotatable", True)
         for pd in cd["pins"]:
             pin = Pin(
                 name=pd["name"],

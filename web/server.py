@@ -21,6 +21,33 @@ EXAMPLES_DIR = PROJECT_DIR / "examples"
 _render_lock = threading.Lock()
 
 
+def _reload_schematic_package():
+    """Import a fresh copy of the ``schematic`` package (dev hot reload).
+
+    Callers must hold ``_render_lock``. Evicting modules from ``sys.modules``
+    while another thread is importing the same package leaves partially
+    initialised modules behind, which surfaces as bogus circular-import errors.
+    """
+    import importlib
+    import sys
+
+    importlib.invalidate_caches()
+    loaded = [n for n in sys.modules if n == "schematic" or n.startswith("schematic.")]
+    # Children first, so no half-live submodule survives the eviction.
+    for name in sorted(loaded, key=lambda n: n.count("."), reverse=True):
+        sys.modules.pop(name, None)
+    try:
+        return (
+            importlib.import_module("schematic"),
+            importlib.import_module("schematic.layout.config"),
+        )
+    except BaseException:
+        # Never keep a failed import around for the next request.
+        for name in [n for n in sys.modules if n == "schematic" or n.startswith("schematic.")]:
+            sys.modules.pop(name, None)
+        raise
+
+
 class SchematicHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Clean terminal logging
@@ -73,6 +100,8 @@ class SchematicHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
         except OSError:
             self._send_error(HTTPStatus.NOT_FOUND, "File read error")
 
@@ -95,16 +124,7 @@ class SchematicHandler(BaseHTTPRequestHandler):
             dark_theme = req.get("dark_theme", True)
 
             with _render_lock:
-                # Hot-reload the whole schematic package safely
-                import importlib
-                import sys
-
-                for name in list(sys.modules.keys()):
-                    if name == "schematic" or name.startswith("schematic."):
-                        sys.modules.pop(name, None)
-
-                schematic = importlib.import_module("schematic")
-                config = importlib.import_module("schematic.layout.config")
+                schematic, config = _reload_schematic_package()
 
                 effort = req.get("effort", "balanced")
                 if effort not in config.EFFORT_LEVELS:
@@ -114,6 +134,9 @@ class SchematicHandler(BaseHTTPRequestHandler):
                 )
 
             self._send_json({"status": "ok", "svg": svg})
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser cancelled the request (common while typing).
+            self.close_connection = True
         except Exception as exc:
             traceback.print_exc()
             # Matched by name: after a hot reload the parser raises a freshly
@@ -198,18 +221,24 @@ class SchematicHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, data: dict, status: int = HTTPStatus.OK):
         body = json.dumps(data).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def _send_error(self, status: HTTPStatus, message: str):
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(message.encode("utf-8"))
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(message.encode("utf-8"))
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
 
 def run_server(host: str = "127.0.0.1", port: int = 5000) -> None:

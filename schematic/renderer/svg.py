@@ -348,21 +348,34 @@ class SvgRenderer:
         if not (raw_img.startswith("http://") or raw_img.startswith("https://") or raw_img.startswith("data:") or raw_img.startswith("/")):
             raw_img = f"/{raw_img}"
         img_href = html.escape(raw_img)
+        rotation = comp.rotation % 360
         if comp.image_rect is not None:
             ix, iy, iw, ih = comp.image_rect
-            img_x = comp.x + ix
-            img_y = comp.y + iy
-            img_w = iw
-            img_h = ih
+        elif rotation in (90, 270):
+            ix = iy = 0.0
+            iw, ih = comp.height, comp.width
         else:
-            img_x = comp.x
-            img_y = comp.y
-            img_w = comp.width
-            img_h = comp.height
-        parts.append(
-            f'<image href="{img_href}" xlink:href="{img_href}" x="{img_x:.1f}" y="{img_y:.1f}" '
-            f'width="{img_w:.1f}" height="{img_h:.1f}" preserveAspectRatio="none" filter="url(#comp-shadow)" />'
-        )
+            ix = iy = 0.0
+            iw, ih = comp.width, comp.height
+        if rotation in (90, 270):
+            # The image definition stays in the unrotated local frame; rotate
+            # it around the component centre onto the rotated footprint.
+            cx = comp.x + comp.width / 2.0
+            cy = comp.y + comp.height / 2.0
+            origin_x = comp.x + (comp.width - comp.height) / 2.0
+            origin_y = comp.y + (comp.height - comp.width) / 2.0
+            angle = 90 if rotation == 90 else -90
+            parts.append(f'<g transform="rotate({angle} {cx:.1f} {cy:.1f})">')
+            parts.append(
+                f'<image href="{img_href}" xlink:href="{img_href}" x="{origin_x + ix:.1f}" y="{origin_y + iy:.1f}" '
+                f'width="{iw:.1f}" height="{ih:.1f}" preserveAspectRatio="none" filter="url(#comp-shadow)" />'
+            )
+            parts.append("</g>")
+        else:
+            parts.append(
+                f'<image href="{img_href}" xlink:href="{img_href}" x="{comp.x + ix:.1f}" y="{comp.y + iy:.1f}" '
+                f'width="{iw:.1f}" height="{ih:.1f}" preserveAspectRatio="none" filter="url(#comp-shadow)" />'
+            )
         # Outline boundary
         parts.append(
             f'<rect x="{comp.x:.1f}" y="{comp.y:.1f}" width="{comp.width:.1f}" height="{comp.height:.1f}" '
