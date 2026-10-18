@@ -1,0 +1,46 @@
+# 13 - Multiple functional regions
+# Power input, MCU core, sensing and communication sections. A good drawing
+# makes the regions visible as groups, keeps power flowing into the core,
+# and does not route sensor wires through the power section.
+
+USB: USB-C Power Input
+  pins: VBUS, GND
+
+Fuse: fuse 500mA
+  pins: IN, OUT
+
+LDO: MCP1700 LDO
+  pins: VIN, VOUT, GND
+
+Cin: capacitor 10uF
+  pins: 1, 2
+
+MCU: SAMD21 MCU
+  pins: VDD, GND, PA08(SDA), PA09(SCL), PA10(TX), PA11(RX), PA02(AIN0), PA14(CAN_TX), PA15(CAN_RX)
+
+Light: VEML7700 Light Sensor
+  pins: VDD, GND, SDA, SCL
+
+Hum: SHT40 Humidity Sensor
+  pins: VDD, GND, SDA, SCL
+
+Thermistor: NTC Thermistor Divider
+  pins: OUT, VDD, GND
+
+Radio: LoRa Module RFM95
+  pins: VCC, GND, RXD, TXD
+
+CANX: MCP2562 CAN Transceiver
+  pins: TXD, RXD, CANH, CANL, VDD, GND
+
+USB.VBUS -> Fuse.IN : VBUS
+Fuse.OUT -> LDO.VIN, Cin.1 : VBUS_F
+LDO.VOUT -> MCU.VDD, Light.VDD, Hum.VDD, Thermistor.VDD, Radio.VCC, CANX.VDD : 3V3
+USB.GND -> Cin.2, LDO.GND, MCU.GND, Light.GND, Hum.GND, Thermistor.GND, Radio.GND, CANX.GND : GND
+MCU.PA08 -> Light.SDA, Hum.SDA : I2C_SDA
+MCU.PA09 -> Light.SCL, Hum.SCL : I2C_SCL
+Thermistor.OUT -> MCU.PA02 : NTC_ADC
+MCU.PA10 -> Radio.RXD : LORA_TX
+MCU.PA11 <- Radio.TXD : LORA_RX
+MCU.PA14 -> CANX.TXD : CAN_TX
+MCU.PA15 <- CANX.RXD : CAN_RX

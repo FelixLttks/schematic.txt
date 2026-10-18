@@ -1,0 +1,22 @@
+# 02 - Branching network
+# One driver fans out to several loads (a clock tree and a reset tree).
+# A good drawing shows each tree as a clean trunk with perpendicular
+# branches and junction dots, and the two trees do not tangle.
+
+Osc: 25MHz Oscillator
+  pins: VDD, OUT, EN, GND
+
+Supervisor: Reset Supervisor
+  pins: VDD, RST_N, GND
+
+FPGA: iCE40 FPGA
+  pins: CLK, RST_N, DONE
+
+PHY: LAN8720 Ethernet PHY
+  pins: REFCLK, RST_N
+
+Codec: WM8960 Audio Codec
+  pins: MCLK, RST_N
+
+Osc.OUT -> FPGA.CLK, PHY.REFCLK, Codec.MCLK : CLK_25M
+Supervisor.RST_N -> FPGA.RST_N, PHY.RST_N, Codec.RST_N : SYS_RST_N

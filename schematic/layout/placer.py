@@ -1,1020 +1,1067 @@
-"""Topology driven placement with routing feedback.
+"""Connectivity-driven component placement.
 
-The placer treats placement and routing as one optimization problem.  A graph
-embedding supplies several legal starting layouts, series parts are inserted
-into graph edges, and a discrete coordinate search compares candidates by the
-actual routes produced by :mod:`schematic.layout.router`.
+Pipeline (per connected sub-circuit):
+
+1. **Classification** -- pull-up / filter / decoupling passives become
+   *satellites*: they are not placed on their own but attached next to the pin
+   they serve, vertically oriented with the supply side away from the signal.
+2. **Global embedding** -- stress majorization (Gansner, Koren & North) on the
+   weighted connectivity graph gives every component a position that reflects
+   the circuit topology; declared pin sides act as direction constraints
+   (a part wired to the hub's left-hand pins must lie left of the hub).
+3. **Port configuration** -- free pins face the components they connect to
+   and are sorted by the position of their peers (barycentric ordering), so
+   bundles leave a component without crossing.  Two-pin parts are initially
+   oriented along their connection; ambiguous axes are routed as candidates.
+4. **Legalization** -- overlaps are removed with corridor clearances while
+   keeping the relative order of components (mental-map preservation).
+5. **Local search** -- deterministic steepest-descent over align / shift /
+   swap moves on the *estimated routing* objective (bends, crossings, wire
+   length, routes through bodies, area): placement anticipates routing.
+
+Unconnected sub-circuits are packed next to each other; isolated parts go
+into a row below the drawing.
+
+Module layout: this file holds the placer core (classification, port
+configuration, satellites, legalization, packing); the initial placements
+live in ``seeds.py`` and the local search in ``search.py``.
 """
 
 from __future__ import annotations
 
 import math
-import random
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Tuple
 
-from schematic.models import Component, Net, Point, Schematic, Side, GRID_SIZE, snap_to_grid
-from schematic.layout.pin_allocator import allocate_pins_and_dimensions
+from schematic.models import Component, Pin, Schematic, Side, GRID_SIZE
+from schematic.layout.config import DEFAULT_CONFIG, LayoutConfig
+from schematic.layout.estimate import Rect
+from schematic.layout.pin_allocator import (
+    OPPOSITE,
+    apply_order,
+    default_sides,
+    orient_switch,
+    orient_two_pin,
+    resolve_pin,
+    size_and_place_pins,
+    snap,
+    switch_common,
+)
+from schematic.layout.search import LocalSearchMixin
+from schematic.layout.seeds import LayeredSeedMixin, StressSeedMixin
+from schematic.layout.semantics import NetClass, Semantics, analyze
 
-MARGIN = 100.0
-COLUMN_GAP = 240.0
-ROW_GAP = 100.0
-INLINE_GAP = GRID_SIZE
-
-
-def _net_is_distribution(net: Net) -> bool:
-    """Recognize shared rails, while also treating large fanouts structurally."""
-    name = net.name.upper()
-    power_tokens = ("GND", "VSS", "NEG", "3V3", "3.3V", "5V", "VCC", "VDD", "VIN", "VBUS", "BAT", "POWER")
-    return len(net.connections) >= 5 or (len(net.connections) >= 3 and any(token in name for token in power_tokens))
-
-
-def _component_connections(schematic: Schematic, comp_id: str) -> List[Tuple[Net, object]]:
-    return [
-        (net, conn)
-        for net in schematic.nets
-        for conn in net.connections
-        if conn.component_id == comp_id
-    ]
+Pt = Tuple[float, float]
 
 
-def _unique_nets(nets: Iterable[Net]) -> List[Net]:
-    result: List[Net] = []
-    seen: Set[int] = set()
-    for net in nets:
-        marker = id(net)
-        if marker not in seen:
-            seen.add(marker)
-            result.append(net)
-    return result
+@dataclass
+class Satellite:
+    comp: str
+    anchor: str            # macro component the satellite hangs off
+    anchor_pin: str        # pin id on the anchor
+    near_pin: str          # satellite pin wired towards the anchor pin
+    far_pin: str           # satellite pin wired to the supply / ground
+    above: bool            # True: hangs above the wire (pull-up), False: below
+    slot: int = 0          # position along the wire when several share a pin
+    dist: float = 60.0     # distance of the part's wire tap from the anchor pin
+    rel: Pt = (0.0, 0.0)   # top-left offset relative to the anchor's top-left
+    conventional_above: bool = True                       # supply up, ground down
+    anchors: List[Tuple[str, str]] = field(default_factory=list)  # candidate anchor pins
 
 
-def _connected_components(net: Net, excluding: str = "") -> List[str]:
-    return list(dict.fromkeys(c.component_id for c in net.connections if c.component_id != excluding))
+@dataclass
+class _Group:
+    comps: List[str]
+    hub: str
+    pos: Dict[str, Pt] = field(default_factory=dict)  # top-left
 
 
-def _classify_small_parts(schematic: Schematic) -> Tuple[Dict[str, dict], Dict[str, dict]]:
-    """Find edge-inserted and branch parts from graph degree, not component names."""
-    series: Dict[str, dict] = {}
-    shunts: Dict[str, dict] = {}
-    for comp in schematic.components.values():
-        if not comp.is_standard or len(comp.pins) < 2:
-            continue
-        per_pin: Dict[str, Net] = {}
-        for net, conn in _component_connections(schematic, comp.id):
-            pin_id = conn.pin_id or conn.pin_name
-            per_pin.setdefault(pin_id, net)
-        nets = _unique_nets(per_pin.values())
-        active_pin_count = len(per_pin)
-        if len(nets) != 2 or active_pin_count != 2:
-            continue
+class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
+    def __init__(self, schematic: Schematic, semantics: Optional[Semantics] = None,
+                 config: Optional[LayoutConfig] = None,
+                 orientation_overrides: Optional[Dict[str, bool]] = None,
+                 keep_positions: bool = False):
+        self.sch = schematic
+        self.cfg = config or DEFAULT_CONFIG
+        self.sem = semantics or analyze(schematic)
+        self.comps = schematic.components
+        self.orientation_overrides = orientation_overrides or {}
+        self.keep_positions = keep_positions
+        self._forced_orientations: Dict[str, bool] = {}
+        self.sats: Dict[str, Satellite] = {}
+        self.macro: List[str] = []
+        self.isolated: List[str] = []
+        self.pos: Dict[str, Pt] = {}
+        self.conn_pin: Dict[int, str] = {}  # id(NetConnection) -> pin id
+        self._fp_cache: Dict[str, Rect] = {}
+        self._hub: Optional[str] = None     # hub of the group being configured
+        self._columns: Dict[str, int] = {}  # layered seed: column of every part
 
-        # Fuses and switches are graph edges even when one terminal is on a
-        # shared rail. Other two-terminal parts on one shared and one signal
-        # net are branches (for example a pull-up or filter capacitor).
-        has_distribution = any(_net_is_distribution(net) for net in nets)
-        edge_part = comp.kind in ("fuse", "switch") or not has_distribution
-        a_peers = _connected_components(nets[0], comp.id)
-        b_peers = _connected_components(nets[1], comp.id)
-        if not a_peers or not b_peers:
-            continue
-        if edge_part and set(a_peers) != set(b_peers):
-            series[comp.id] = {
-                "nets": nets,
-                "pins": per_pin,
-                "peer_sets": (a_peers, b_peers),
-            }
-        elif not edge_part:
-            signal_nets = [net for net in nets if not _net_is_distribution(net)]
-            if len(signal_nets) == 1:
-                peers = _connected_components(signal_nets[0], comp.id)
-                if peers:
-                    shunts[comp.id] = {"signal_net": signal_nets[0], "peers": peers}
-    return series, shunts
+    # ================================================================ public
+    def place(self, strategy: Optional[str] = None, search: bool = True) -> None:
+        """Places all components.
 
-
-def _choose_hub(comps: List[Component], schematic: Schematic, series: Dict[str, dict], shunts: Dict[str, dict]) -> Component:
-    macro_ids = {c.id for c in comps if c.id not in series and c.id not in shunts}
-    degree = {cid: 0.0 for cid in macro_ids}
-    for net in schematic.nets:
-        if _net_is_distribution(net):
-            continue
-        members = sorted({c.component_id for c in net.connections if c.component_id in macro_ids})
-        if len(members) < 2:
-            continue
-        weight = 1.0 / max(1, len(members) - 1)
-        for cid in members:
-            degree[cid] += weight * (len(members) - 1)
-    for info in series.values():
-        a, b = info["peer_sets"]
-        for x in a:
-            for y in b:
-                if x in degree and y in degree:
-                    degree[x] += 0.5
-                    degree[y] += 0.5
-    return max((c for c in comps if c.id in macro_ids), key=lambda c: (len(c.pins) * 2 + degree[c.id]))
-
-
-def _build_graph(
-    schematic: Schematic,
-    macro_ids: Set[str],
-    series: Dict[str, dict],
-) -> Dict[str, Dict[str, float]]:
-    graph: Dict[str, Dict[str, float]] = {cid: {} for cid in sorted(macro_ids)}
-
-    def add_edge(a: str, b: str, weight: float) -> None:
-        if a == b or a not in graph or b not in graph:
+        ``strategy`` selects the initial placement: ``"layered"`` (port-aware
+        columns), ``"stress"`` (stress majorization) or ``None`` to build both
+        and keep the one with the better estimated routing cost.  ``search``
+        enables the local search on the estimated routing objective."""
+        sch = self.sch
+        if not self.comps:
+            sch.width, sch.height = 600.0, 400.0
             return
-        graph[a][b] = graph[a].get(b, 0.0) + weight
-        graph[b][a] = graph[b].get(a, 0.0) + weight
-
-    for net in schematic.nets:
-        if _net_is_distribution(net):
-            continue
-        members = sorted({c.component_id for c in net.connections if c.component_id in macro_ids})
-        if len(members) < 2:
-            continue
-        base = 1.0 / max(1, len(members) - 1)
-        for i, a in enumerate(members):
-            for b in members[i + 1 :]:
-                add_edge(a, b, base)
-    for info in series.values():
-        left, right = info["peer_sets"]
-        for a in left:
-            for b in right:
-                add_edge(a, b, 1.2 / max(1, len(left) * len(right)))
-    return graph
-
-
-def _resolve_equivalent_pins(schematic: Schematic) -> None:
-    for net in schematic.nets:
-        for conn in net.connections:
-            comp = schematic.components.get(conn.component_id)
-            if not comp:
-                continue
-            matching = comp.get_pins_by_name(conn.pin_name)
-            if len(matching) <= 1:
-                if matching:
-                    conn.pin_id = matching[0].id
-                continue
-            peer_points = []
-            for peer_id in conn.peer_component_ids:
-                peer = schematic.components.get(peer_id)
-                if peer and peer.id != comp.id:
-                    peer_points.append(peer.center)
-            if not peer_points:
-                peer_points = [
-                    schematic.components[c.component_id].center
-                    for c in net.connections
-                    if c.component_id != comp.id and c.component_id in schematic.components
-                ]
-            if peer_points:
-                pin = min(matching, key=lambda p: min(p.position.manhattan_to(q) for q in peer_points))
-            else:
-                pin = matching[0]
-            conn.pin_id = pin.id
-
-
-def _pin_for_connection(schematic: Schematic, conn):
-    comp = schematic.components.get(conn.component_id)
-    if not comp:
-        return None
-    return comp.pins.get(conn.pin_id) if conn.pin_id else comp.get_pin(conn.pin_name)
-
-
-def _direct_hub_targets(schematic: Schematic, hub: Component) -> Dict[str, List[float]]:
-    targets: Dict[str, List[float]] = {}
-    for net in schematic.nets:
-        if _net_is_distribution(net):
-            continue
-        hub_conns = [c for c in net.connections if c.component_id == hub.id]
-        other_ids = {c.component_id for c in net.connections if c.component_id != hub.id}
-        for conn in hub_conns:
-            pin = _pin_for_connection(schematic, conn)
-            if not pin:
-                continue
-            for cid in other_ids:
-                targets.setdefault(cid, []).append(pin.position.y)
-    return targets
-
-
-def _derive_levels_and_sides(
-    schematic: Schematic,
-    hub: Component,
-    graph: Dict[str, Dict[str, float]],
-) -> Tuple[Dict[str, int], Dict[str, Side]]:
-    levels = {hub.id: 0}
-    sides: Dict[str, Side] = {hub.id: Side.LEFT}
-    direct_votes: Dict[str, Dict[Side, float]] = {}
-    for net in schematic.nets:
-        if _net_is_distribution(net):
-            continue
-        hub_conns = [c for c in net.connections if c.component_id == hub.id]
-        peers = [c for c in net.connections if c.component_id != hub.id and c.component_id in graph]
-        for hc in hub_conns:
-            pin = _pin_for_connection(schematic, hc)
-            side = pin.side if pin else Side.LEFT
-            for conn in peers:
-                direct_votes.setdefault(conn.component_id, {})
-                direct_votes[conn.component_id][side] = direct_votes[conn.component_id].get(side, 0.0) + (1.0 / max(1, len(peers)))
-    for cid, votes in direct_votes.items():
-        sides[cid] = max(votes, key=votes.get)
-
-    # Graph distance gives a topological depth. Ties are resolved by stronger
-    # connections, and disconnected islands are attached to the nearest side.
-    frontier = [hub.id]
-    while frontier:
-        u = frontier.pop(0)
-        for v in sorted(graph.get(u, {})):
-            if v not in levels:
-                levels[v] = levels[u] + 1
-                frontier.append(v)
-    for cid in sorted(graph):
-        if cid not in levels:
-            levels[cid] = max(levels.values(), default=0) + 1
-
-    pending = [cid for cid in sorted(graph) if cid != hub.id and cid not in sides]
-    while pending:
-        progressed = False
-        for cid in pending[:]:
-            neighbor_votes = {Side.LEFT: 0.0, Side.RIGHT: 0.0}
-            for peer, weight in sorted(graph[cid].items()):
-                if peer in sides:
-                    neighbor_votes[sides[peer]] += weight
-            if sum(neighbor_votes.values()) > 0:
-                sides[cid] = max(neighbor_votes, key=neighbor_votes.get)
-                pending.remove(cid)
-                progressed = True
-        if not progressed:
-            cid = pending.pop(0)
-            sides[cid] = Side.LEFT if sum(1 for s in sides.values() if s == Side.LEFT) <= sum(1 for s in sides.values() if s == Side.RIGHT) else Side.RIGHT
-    return levels, sides
-
-
-def _initial_layout(
-    schematic: Schematic,
-    hub: Component,
-    graph: Dict[str, Dict[str, float]],
-    series: Dict[str, dict],
-    seed: int,
-) -> None:
-    rng = random.Random(seed)
-    allocate_pins_and_dimensions(schematic, use_geometry=False)
-    hub.x = MARGIN + 1200.0
-    hub.y = MARGIN + 80.0
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-
-    levels, sides = _derive_levels_and_sides(schematic, hub, graph)
-    hub_targets = _direct_hub_targets(schematic, hub)
-    macro_ids = set(graph)
-    macro_ids.discard(hub.id)
-
-    # Establish a natural target row from hub pin heights; propagate it over
-    # the graph for components that sit behind a pass-through component.
-    ideal_y: Dict[str, float] = {}
-    for cid in sorted(macro_ids):
-        ys = hub_targets.get(cid, [])
-        if ys:
-            ideal_y[cid] = sum(ys) / len(ys)
-    for _ in range(len(macro_ids) + 1):
-        changed = False
-        for cid in sorted(macro_ids):
-            if cid in ideal_y:
-                continue
-            peers = [(ideal_y[p], w) for p, w in sorted(graph[cid].items()) if p in ideal_y]
-            if peers:
-                ideal_y[cid] = sum(y * w for y, w in peers) / sum(w for _, w in peers)
-                changed = True
-        if not changed:
-            break
-    for cid in sorted(macro_ids):
-        ideal_y.setdefault(cid, hub.center.y + (levels[cid] % 3 - 1) * 160.0)
-
-    # Allow two side-by-side lanes per graph depth to avoid a single tall
-    # vertical stack while keeping nearby direct peers within reach.
-    lane: Dict[str, int] = {}
-    for side in (Side.LEFT, Side.RIGHT):
-        for depth in sorted({levels[cid] for cid in macro_ids if sides[cid] == side}):
-            members = [cid for cid in macro_ids if sides[cid] == side and levels[cid] == depth]
-            members.sort(key=lambda cid: (-graph[cid].get(hub.id, 0.0), ideal_y[cid], cid))
-            lane_ends: List[float] = []
-            for cid in members:
-                comp = schematic.components[cid]
-                desired_top = ideal_y[cid] - comp.height / 2.0
-                available = [i for i, end in enumerate(lane_ends) if desired_top >= end + ROW_GAP]
-                if available:
-                    chosen = min(available, key=lambda i: abs(lane_ends[i] - desired_top))
-                elif len(lane_ends) < 2:
-                    chosen = len(lane_ends)
-                    lane_ends.append(-1e9)
-                else:
-                    chosen = min(range(2), key=lambda i: max(lane_ends[i] + ROW_GAP, desired_top) - desired_top)
-                lane[cid] = chosen
-                lane_ends[chosen] = max(lane_ends[chosen] + ROW_GAP, desired_top) + comp.height
-
-    # Convert graph depth and collision lane into ordered columns on each side.
-    slots: Dict[Tuple[Side, int, int], List[str]] = {}
-    for cid in sorted(macro_ids):
-        side = sides[cid]
-        slot = (side, levels[cid], lane[cid])
-        slots.setdefault(slot, []).append(cid)
-    left_keys = sorted((k for k in slots if k[0] == Side.LEFT), key=lambda k: (k[1], k[2]))
-    right_keys = sorted((k for k in slots if k[0] == Side.RIGHT), key=lambda k: (k[1], k[2]))
-    left_width = sum(max(schematic.components[cid].width for cid in slots[key]) + COLUMN_GAP for key in left_keys)
-    hub.x = snap_to_grid(MARGIN + left_width + 80.0)
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-
-    def set_side_columns(keys: List[Tuple[Side, int, int]], side: Side) -> None:
-        cursor = hub.x if side == Side.LEFT else hub.x + hub.width
-        for key in keys:
-            width = max(schematic.components[cid].width for cid in slots[key])
-            if side == Side.LEFT:
-                cursor -= COLUMN_GAP + width
-                x = cursor
-            else:
-                x = cursor + COLUMN_GAP
-                cursor = x + width
-            for cid in sorted(slots[key]):
-                comp = schematic.components[cid]
-                comp.x = snap_to_grid(max(MARGIN, x + rng.choice((-80.0, -40.0, 0.0, 40.0, 80.0)) if seed else x))
-
-    set_side_columns(left_keys, Side.LEFT)
-    set_side_columns(right_keys, Side.RIGHT)
-
-    # Pack each column around its ideal peer height. Search both directions so
-    # one collision does not push an entire column arbitrarily far downward.
-    column_members: Dict[Tuple[Side, int, int], List[str]] = {}
-    for cid in sorted(macro_ids):
-        column_members.setdefault((sides[cid], levels[cid], lane[cid]), []).append(cid)
-    for key, members in column_members.items():
-        members.sort(key=lambda cid: (ideal_y[cid], cid))
-        placed: List[Component] = []
-        for cid in members:
-            comp = schematic.components[cid]
-            desired = ideal_y[cid] - comp.height / 2.0
-            if seed:
-                desired += rng.choice((-160.0, -80.0, 0.0, 80.0, 160.0))
-            candidates = [snap_to_grid(max(MARGIN, desired + delta)) for radius in range(0, 2001, 20) for delta in ((0.0,) if radius == 0 else (-radius, radius))]
-            valid = [y for y in candidates if all(not _rects_too_close(comp.x, y, comp.width, comp.height, p.x, p.y, p.width, p.height, ROW_GAP) for p in placed)]
-            comp.y = min(valid, key=lambda y: (abs(y - desired), y)) if valid else snap_to_grid(max(MARGIN, desired))
-            placed.append(comp)
-
-    # Place graph-edge parts directly before the endpoint on the lower-degree
-    # side. The part occupies a segment of that edge instead of a spare column.
-    _refit_small_parts(schematic, series, schematic.components[hub.id])
-    _legalize_overlaps(schematic, movable=macro_ids)
-    # Refit edge parts after a macro component may have been shifted.
-    _refit_small_parts(schematic, series, schematic.components[hub.id])
-
-
-def _rects_too_close(ax: float, ay: float, aw: float, ah: float, bx: float, by: float, bw: float, bh: float, gap: float) -> bool:
-    return not (ax + aw + gap <= bx or bx + bw + gap <= ax or ay + ah + gap <= by or by + bh + gap <= ay)
-
-
-def _place_series_part(schematic: Schematic, cid: str, info: dict, hub: Component) -> None:
-    comp = schematic.components[cid]
-    candidate_targets: List[Tuple[int, Component, Net, object]] = []
-    for net in info["nets"]:
-        peers = [c for c in net.connections if c.component_id != cid and c.component_id in schematic.components]
-        for conn in peers:
-            target = schematic.components[conn.component_id]
-            # The hub is the preferred end for switches feeding the hub. For
-            # other series parts, prefer the net with fewer external endpoints.
-            rank = (0 if target.id == hub.id and comp.kind == "switch" else 1, len(peers), target.center.manhattan_to(hub.center))
-            candidate_targets.append((rank[0] * 100000 + rank[1] * 1000 + int(rank[2]), target, net, conn))
-    if not candidate_targets:
-        return
-    _, target, target_net, target_conn = min(candidate_targets, key=lambda item: item[0])
-    target_pin = _pin_for_connection(schematic, target_conn)
-    if target_pin is None:
-        return
-    if comp.kind == "switch":
-        source_net = next((net for net in info["nets"] if net is not target_net), None)
-        source_pins = []
-        if source_net:
-            for conn in source_net.connections:
-                if conn.component_id != cid:
-                    pin = _pin_for_connection(schematic, conn)
-                    if pin:
-                        source_pins.append(pin)
-        target_part_conn = next((c for c in target_net.connections if c.component_id == cid), None)
-        target_part_pin = _pin_for_connection(schematic, target_part_conn) if target_part_conn else None
-        if source_pins and target_part_pin:
-            source_pin = min(source_pins, key=lambda pin: pin.position.manhattan_to(target_pin.position))
-            pin_offset_y = target_part_pin.position.y - comp.y
-            comp.x = snap_to_grid((source_pin.position.x + target_pin.position.x - comp.width) / 2.0)
-            comp.y = snap_to_grid(target_pin.position.y - pin_offset_y)
-            return
-    comp.x = snap_to_grid(max(MARGIN, target.x - comp.width - INLINE_GAP))
-    comp.y = snap_to_grid(target_pin.position.y - comp.height / 2.0)
-
-
-def _refit_small_parts(schematic: Schematic, series: Dict[str, dict], hub: Component) -> None:
-    """Refresh pin coordinates, then fit inline and branch parts to them."""
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-    for cid in series:
-        _place_series_part(schematic, cid, series[cid], hub)
-    _place_shunt_parts(schematic, series)
-    # Standard parts can change pin sides as peers move. One refreshed pass
-    # makes their own terminal positions agree with the new macro geometry.
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-    for cid in series:
-        _place_series_part(schematic, cid, series[cid], hub)
-    _place_shunt_parts(schematic, series)
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-
-
-def _place_shunt_parts(schematic: Schematic, series: Dict[str, dict]) -> None:
-    shunts: Dict[str, Tuple[Net, List[str]]] = {}
-    for comp in schematic.components.values():
-        if not comp.is_standard or len(comp.pins) != 2 or comp.id in series:
-            continue
-        per_pin = [net for net, _ in _component_connections(schematic, comp.id)]
-        nets = _unique_nets(per_pin)
-        if len(nets) == 2 and any(_net_is_distribution(n) for n in nets):
-            signal = next((n for n in nets if not _net_is_distribution(n)), None)
-            if signal:
-                peers = _connected_components(signal, comp.id)
-                if peers:
-                    shunts[comp.id] = (signal, peers)
-    groups: Dict[str, List[Tuple[str, List[str]]]] = {}
-    for cid, (net, peers) in shunts.items():
-        groups.setdefault(net.name, []).append((cid, peers))
-
-    # Branch devices hang off a shared signal corridor; placing them directly
-    # on that corridor turns the main data path into a crowded obstacle field.
-    # Put siblings together in a clear side lane instead, choosing the nearest
-    # lane with enough room from the rest of the drawing.
-    for net_name in sorted(groups):
-        siblings = sorted(groups[net_name], key=lambda item: item[0])
-        sibling_ids = {cid for cid, _ in siblings}
-        anchor_ids = sorted({peer for _, peers in siblings for peer in peers if peer not in sibling_ids and peer not in series})
-        if not anchor_ids:
-            anchor_ids = sorted({peer for _, peers in siblings for peer in peers if peer not in sibling_ids})
-        endpoints = [schematic.components[cid] for cid in anchor_ids if cid in schematic.components]
-        if not endpoints:
-            continue
-        net = shunts[siblings[0][0]][0]
-        pins = []
-        for conn in net.connections:
-            if conn.component_id in anchor_ids:
-                pin = _pin_for_connection(schematic, conn)
-                if pin:
-                    pins.append(pin)
-        center_x = sum(pin.position.x for pin in pins) / len(pins) if pins else sum(c.center.x for c in endpoints) / len(endpoints)
-        center_y = sum(pin.position.y for pin in pins) / len(pins) if pins else sum(c.center.y for c in endpoints) / len(endpoints)
-        span_x = max(c.center.x for c in endpoints) - min(c.center.x for c in endpoints)
-        span_y = max(c.center.y for c in endpoints) - min(c.center.y for c in endpoints)
-        horizontal = span_x >= span_y
-
-        best_layout = None
-        best_score = math.inf
-        direct_links = _direct_link_counts(schematic)
-        for lane in (-480.0, -320.0, -240.0, -160.0, 160.0, 240.0, 320.0, 480.0):
-            placements = {}
-            score = abs(lane) * 0.02
-            invalid_lane = False
-            for index, (cid, _) in enumerate(siblings):
-                comp = schematic.components[cid]
-                along = (index - (len(siblings) - 1) / 2.0) * 160.0
-                if horizontal:
-                    x = snap_to_grid(center_x - comp.width / 2.0 + along)
-                    y = snap_to_grid(center_y - comp.height / 2.0 + lane)
-                else:
-                    x = snap_to_grid(center_x - comp.width / 2.0 + lane)
-                    y = snap_to_grid(center_y - comp.height / 2.0 + along)
-                if x < MARGIN or y < MARGIN:
-                    invalid_lane = True
-                    break
-                placements[cid] = (x, y)
-                for other in schematic.components.values():
-                    if other.id in sibling_ids:
-                        continue
-                    probe = Component(id=comp.id, x=x, y=y, width=comp.width, height=comp.height)
-                    if probe.rect.intersects(other.rect):
-                        score += 100000.0
-                    direct_count = direct_links.get(frozenset((comp.id, other.id)), 0)
-                    preferred = 80.0 if direct_count == 1 else (280.0 if not comp.is_standard and not other.is_standard else 80.0)
-                    deficit = max(0.0, preferred - _component_clearance(probe, other))
-                    score += (0.10 if direct_count == 1 else 0.35) * deficit * deficit
-            if invalid_lane:
-                continue
-            if score < best_score:
-                best_score = score
-                best_layout = placements
-        if best_layout:
-            for cid, (x, y) in best_layout.items():
-                schematic.components[cid].x = x
-                schematic.components[cid].y = y
-
-
-def _legalize_overlaps(schematic: Schematic, movable: Set[str]) -> None:
-    fixed = [c for c in schematic.components.values() if c.id not in movable and c.is_standard]
-    ordered = [c for c in schematic.components.values() if c.id in movable]
-    placed = fixed[:]
-    for comp in ordered:
-        if not any(comp.rect.intersects(other.rect) for other in placed):
-            placed.append(comp)
-            continue
-        original = comp.y
-        candidates = [snap_to_grid(original + d) for r in range(20, 1001, 20) for d in (-r, r)]
-        valid = [y for y in candidates if y >= MARGIN and all(not comp.rect.__class__(comp.x, y, comp.width, comp.height).intersects(p.rect) for p in placed)]
-        if valid:
-            comp.y = min(valid, key=lambda y: (abs(y - original), y))
-        placed.append(comp)
-
-
-def _snapshot(schematic: Schematic) -> Dict[str, Tuple[float, float]]:
-    return {cid: (c.x, c.y) for cid, c in schematic.components.items()}
-
-
-def _restore(schematic: Schematic, positions: Dict[str, Tuple[float, float]]) -> None:
-    for cid, (x, y) in positions.items():
-        schematic.components[cid].x = x
-        schematic.components[cid].y = y
-
-
-def _component_clearance(a: Component, b: Component) -> float:
-    """Shortest distance between component rectangles (zero when touching)."""
-    dx = max(a.x - (b.x + b.width), b.x - (a.x + a.width), 0.0)
-    dy = max(a.y - (b.y + b.height), b.y - (a.y + a.height), 0.0)
-    return math.hypot(dx, dy)
-
-
-def _series_neighbor_pairs(series: Dict[str, dict]) -> Set[frozenset[str]]:
-    """Pairs intentionally kept close because a small part occupies their link."""
-    pairs: Set[frozenset[str]] = set()
-    for cid, info in series.items():
-        for net in info["nets"]:
-            for conn in net.connections:
-                if conn.component_id != cid:
-                    pairs.add(frozenset((cid, conn.component_id)))
-    return pairs
-
-
-def _direct_link_counts(schematic: Schematic) -> Dict[frozenset[str], int]:
-    """Count dedicated two-endpoint links between component pairs."""
-    counts: Dict[frozenset[str], int] = {}
-    for net in schematic.nets:
-        if len(net.connections) != 2 or _net_is_distribution(net):
-            continue
-        a, b = (conn.component_id for conn in net.connections)
-        if a != b:
-            pair = frozenset((a, b))
-            counts[pair] = counts.get(pair, 0) + 1
-    return counts
-
-
-def _clearance_penalty(schematic: Schematic, series: Dict[str, dict]) -> float:
-    close_link_pairs = _series_neighbor_pairs(series)
-    direct_links = _direct_link_counts(schematic)
-    comps = sorted(schematic.components.values(), key=lambda comp: comp.id)
-    penalty = 0.0
-    for i, a in enumerate(comps):
-        for b in comps[i + 1 :]:
-            if frozenset((a.id, b.id)) in close_link_pairs:
-                continue
-            clearance = _component_clearance(a, b)
-            direct_count = direct_links.get(frozenset((a.id, b.id)), 0)
-            preferred = 80.0 if direct_count == 1 else (280.0 if not a.is_standard and not b.is_standard else 80.0)
-            deficit = max(0.0, preferred - clearance)
-            penalty += (0.10 if direct_count == 1 else 0.35) * deficit * deficit
-    return penalty
-
-
-def _local_clearance_penalty(schematic: Schematic, cid: str, series: Dict[str, dict]) -> float:
-    comp = schematic.components[cid]
-    close_link_pairs = _series_neighbor_pairs(series)
-    direct_links = _direct_link_counts(schematic)
-    penalty = 0.0
-    for other in schematic.components.values():
-        if other.id == cid or frozenset((cid, other.id)) in close_link_pairs:
-            continue
-        direct_count = direct_links.get(frozenset((cid, other.id)), 0)
-        preferred = 80.0 if direct_count == 1 else (280.0 if not comp.is_standard and not other.is_standard else 80.0)
-        deficit = max(0.0, preferred - _component_clearance(comp, other))
-        penalty += (0.10 if direct_count == 1 else 0.35) * deficit * deficit
-    return penalty
-
-
-def _crossing_count(schematic: Schematic) -> int:
-    """Count distinct orthogonal crossings between different routed nets."""
-    horizontal = []
-    vertical = []
-    for wire in schematic.wires:
-        if wire.start == wire.end:
-            continue
-        if wire.is_horizontal:
-            horizontal.append(wire)
-        elif wire.is_vertical:
-            vertical.append(wire)
-    crossings: Set[Tuple[str, str, float, float]] = set()
-    for h in horizontal:
-        hy = h.start.y
-        h_min, h_max = sorted((h.start.x, h.end.x))
-        for v in vertical:
-            if h.net_name == v.net_name:
-                continue
-            vx = v.start.x
-            v_min, v_max = sorted((v.start.y, v.end.y))
-            if h_min <= vx <= h_max and v_min <= hy <= v_max:
-                net_pair = tuple(sorted((h.net_name, v.net_name)))
-                crossings.add((net_pair[0], net_pair[1], vx, hy))
-    return len(crossings)
-
-
-def _route_metrics(schematic: Schematic, series: Dict[str, dict] | None = None) -> Tuple[float, float, float]:
-    from schematic.layout.router import route_schematic
-
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-    _resolve_equivalent_pins(schematic)
-    route_schematic(schematic)
-    wire_length = sum(w.start.manhattan_to(w.end) for w in schematic.wires)
-    net_graph: Dict[str, Dict[Tuple[float, float], Set[Tuple[float, float]]]] = {}
-    for wire in schematic.wires:
-        a = wire.start.as_tuple()
-        b = wire.end.as_tuple()
-        adj = net_graph.setdefault(wire.net_name, {})
-        adj.setdefault(a, set()).add(b)
-        adj.setdefault(b, set()).add(a)
-    endpoint_groups: Dict[Tuple[str, ...], List[str]] = {}
-    for net in schematic.nets:
-        if _net_is_distribution(net):
-            continue
-        endpoint_ids = tuple(sorted({c.component_id for c in net.connections}))
-        if len(endpoint_ids) >= 2:
-            endpoint_groups.setdefault(endpoint_ids, []).append(net.name)
-    bundled_nets = {name for names in endpoint_groups.values() if len(names) >= 2 for name in names}
-    bends = 0
-    bundled_bends = 0
-    for net_name, adj in net_graph.items():
-        for node, neighbors in adj.items():
-            if len(neighbors) != 2:
-                continue
-            a, b = list(neighbors)
-            if (a[0] == node[0]) != (b[0] == node[0]):
-                bends += 1
-                if net_name in bundled_nets:
-                    bundled_bends += 1
-    min_x = min(c.x for c in schematic.components.values())
-    min_y = min(c.y for c in schematic.components.values())
-    max_x = max(c.x + c.width for c in schematic.components.values())
-    max_y = max(c.y + c.height for c in schematic.components.values())
-    spread = (max_x - min_x) + (max_y - min_y)
-    overlap_penalty = 0.0
-    comps = list(schematic.components.values())
-    for i, a in enumerate(comps):
-        for b in comps[i + 1 :]:
-            if a.rect.intersects(b.rect):
-                overlap_penalty += 100000.0
-    crossings = _crossing_count(schematic)
-    clearances = _clearance_penalty(schematic, series or {})
-    # Readability outranks compactness: true crossings and crowded macro
-    # placements cost enough that a longer open route is usually preferable.
-    score = (
-        wire_length
-        + 90.0 * bends
-        + 350.0 * bundled_bends
-        + 0.02 * spread
-        + 1200.0 * crossings
-        + clearances
-        + overlap_penalty
-    )
-    routed_names = {w.net_name for w in schematic.wires}
-    for net in schematic.nets:
-        if len(net.connections) < 2:
-            continue
-        if net.name not in routed_names:
-            score += 20000.0
-            continue
-        wire_nodes = {
-            point
-            for wire in schematic.wires
-            if wire.net_name == net.name
-            for point in (wire.start.as_tuple(), wire.end.as_tuple())
-        }
-        for conn in net.connections:
-            pin = _pin_for_connection(schematic, conn)
-            if pin and pin.position.as_tuple() not in wire_nodes:
-                score += 5000.0
-    return score, wire_length, float(bends)
-
-
-def _proxy_score(schematic: Schematic, series: Dict[str, dict] | None = None) -> float:
-    """Cheap Manhattan/MST estimate used to rank moves before routing them."""
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-    total = 0.0
-    for net in schematic.nets:
-        points = []
-        for conn in net.connections:
-            pin = _pin_for_connection(schematic, conn)
-            if pin:
-                xy = pin.position.as_tuple()
-                if xy not in points:
-                    points.append(xy)
-        if len(points) < 2:
-            continue
-        # Manhattan minimum spanning tree is a lower bound on routed wire.
-        connected = [points.pop(0)]
-        while points:
-            best = min(
-                ((abs(a[0] - b[0]) + abs(a[1] - b[1]), i, a) for a in connected for i, b in enumerate(points)),
-                key=lambda x: (x[0], x[1], x[2]),
-            )
-            distance, index, source = best
-            endpoint = points[index]
-            total += distance
-            # A non-aligned pair needs at least one orthogonal turn. This
-            # keeps exact pin-row alignment competitive with small changes in
-            # shared-rail length during candidate ranking.
-            if source[0] != endpoint[0] and source[1] != endpoint[1]:
-                total += 75.0
-            connected.append(points.pop(index))
-    comp_list = list(schematic.components.values())
-    for i, a in enumerate(comp_list):
-        for b in comp_list[i + 1 :]:
-            if a.rect.intersects(b.rect):
-                total += 10000.0
-    return total + _clearance_penalty(schematic, series or {})
-
-
-def _peer_alignment_offsets(schematic: Schematic, comp: Component) -> Set[Tuple[float, float]]:
-    offsets: Set[Tuple[float, float]] = set()
-    for net, conn in _component_connections(schematic, comp.id):
-        pin = _pin_for_connection(schematic, conn)
-        if not pin:
-            continue
-        for peer_conn in net.connections:
-            if peer_conn.component_id == comp.id:
-                continue
-            peer_pin = _pin_for_connection(schematic, peer_conn)
-            if not peer_pin:
-                continue
-            dy = snap_to_grid(peer_pin.position.y - pin.position.y)
-            dx = snap_to_grid(peer_pin.position.x - pin.position.x)
-            if 0 < abs(dy) <= 640.0:
-                offsets.add((0.0, dy))
-            if 0 < abs(dx) <= 960.0:
-                offsets.add((dx, 0.0))
-    return offsets
-
-
-def _direct_pair_alignment_offsets(schematic: Schematic, comp: Component) -> Set[Tuple[float, float]]:
-    """Moves that align a pin directly with its sole peer on a two-node net."""
-    offsets: Set[Tuple[float, float]] = set()
-    for net, conn in _component_connections(schematic, comp.id):
-        if len(net.connections) != 2:
-            continue
-        pin = _pin_for_connection(schematic, conn)
-        peer_conn = next((c for c in net.connections if c.component_id != comp.id), None)
-        peer_pin = _pin_for_connection(schematic, peer_conn) if peer_conn else None
-        if not pin or not peer_pin:
-            continue
-        dy = snap_to_grid(peer_pin.position.y - pin.position.y)
-        dx = snap_to_grid(peer_pin.position.x - pin.position.x)
-        peer_comp = schematic.components[peer_conn.component_id]
-        horizontal_pair = abs(peer_comp.center.x - comp.center.x) >= abs(peer_comp.center.y - comp.center.y)
-        if horizontal_pair and 0 < abs(dy) <= 960.0:
-            offsets.add((0.0, dy))
-        elif not horizontal_pair and 0 < abs(dx) <= 1200.0:
-            offsets.add((dx, 0.0))
-    return offsets
-
-
-def _candidate_offsets(schematic: Schematic, comp: Component) -> List[Tuple[float, float]]:
-    offsets: Set[Tuple[float, float]] = set()
-    for delta in (-1280.0, -640.0, -320.0, -160.0, -80.0, -20.0, 20.0, 80.0, 160.0, 320.0, 640.0, 1280.0):
-        offsets.add((0.0, delta))
-        offsets.add((delta, 0.0))
-    offsets.update(_peer_alignment_offsets(schematic, comp))
-    offsets.update(_gap_placement_offsets(schematic, comp))
-    return sorted(offsets, key=lambda d: (abs(d[0]) + abs(d[1]), d[1], d[0]))
-
-
-def _gap_placement_offsets(schematic: Schematic, comp: Component) -> Set[Tuple[float, float]]:
-    """Moves a component into a free gap between two of its connected peers."""
-    peer_ids = {
-        peer_conn.component_id
-        for net, _ in _component_connections(schematic, comp.id)
-        if not _net_is_distribution(net)
-        for peer_conn in net.connections
-        if peer_conn.component_id != comp.id and peer_conn.component_id in schematic.components
-    }
-    peers = sorted(
-        (schematic.components[cid] for cid in peer_ids),
-        key=lambda peer: (comp.center.manhattan_to(peer.center), peer.id),
-    )[:8]
-    offsets: Set[Tuple[float, float]] = set()
-    for i, first in enumerate(peers):
-        for second in peers[i + 1 :]:
-            left, right = sorted((first, second), key=lambda item: (item.x, item.id))
-            horizontal_gap = right.x - (left.x + left.width)
-            already_in_horizontal_gap = left.x + left.width <= comp.x and comp.x + comp.width <= right.x
-            if horizontal_gap >= comp.width + 40.0 and not already_in_horizontal_gap:
-                center_x = (left.x + left.width + right.x - comp.width) / 2.0
-                x_targets = {
-                    snap_to_grid(left.x + left.width + 40.0),
-                    snap_to_grid(center_x - GRID_SIZE / 2.0),
-                    snap_to_grid(center_x + GRID_SIZE / 2.0),
-                    snap_to_grid(center_x - GRID_SIZE),
-                    snap_to_grid(center_x + GRID_SIZE),
-                    snap_to_grid(right.x - comp.width - 40.0),
-                }
-                y_targets = {
-                    comp.y,
-                    snap_to_grid(left.y + left.height + 20.0),
-                    snap_to_grid(right.y + right.height + 20.0),
-                    snap_to_grid((first.center.y + second.center.y) / 2.0 - comp.height / 2.0),
-                }
-                for x in x_targets:
-                    for y in y_targets:
-                        if x >= MARGIN and y >= MARGIN and abs(x - comp.x) + abs(y - comp.y) <= 1600.0:
-                            offsets.add((x - comp.x, y - comp.y))
-
-            top, bottom = sorted((first, second), key=lambda item: (item.y, item.id))
-            vertical_gap = bottom.y - (top.y + top.height)
-            already_in_vertical_gap = top.y + top.height <= comp.y and comp.y + comp.height <= bottom.y
-            if vertical_gap >= comp.height + 40.0 and not already_in_vertical_gap:
-                y_targets = {
-                    snap_to_grid(top.y + top.height + 40.0),
-                    snap_to_grid((top.y + top.height + bottom.y - comp.height) / 2.0),
-                    snap_to_grid(bottom.y - comp.height - 40.0),
-                }
-                x_targets = {
-                    comp.x,
-                    snap_to_grid(top.x + top.width + 20.0),
-                    snap_to_grid(bottom.x + bottom.width + 20.0),
-                    snap_to_grid((first.center.x + second.center.x) / 2.0 - comp.width / 2.0),
-                }
-                for x in x_targets:
-                    for y in y_targets:
-                        if x >= MARGIN and y >= MARGIN and abs(x - comp.x) + abs(y - comp.y) <= 1600.0:
-                            offsets.add((x - comp.x, y - comp.y))
-    return offsets
-
-
-def _optimize_with_routing(
-    schematic: Schematic,
-    movable: Set[str],
-    series: Dict[str, dict],
-    hub: Component,
-    passes: int = 2,
-    route_candidates: int = 2,
-    reverse_order: bool = False,
-) -> float:
-    current = _snapshot(schematic)
-    current_score, _, _ = _route_metrics(schematic, series)
-    ordered_ids = sorted(movable, key=lambda cid: (len(schematic.components[cid].pins), cid))
-
-    # Multi-neighborhood coordinate descent. The MST estimate narrows the
-    # choices, but every component also gets a clearance-driven move and a
-    # topology-alignment move evaluated against a complete reroute. This lets
-    # a placement trade a little wire length for fewer crossings and more air.
-    for _pass in range(passes):
-        changed = False
-        visit_order = list(reversed(ordered_ids)) if reverse_order or _pass % 2 else ordered_ids
-        for cid in visit_order:
-            comp = schematic.components[cid]
-            origin = _snapshot(schematic)
-            offsets = _candidate_offsets(schematic, comp)
-            direct_alignment_offsets = _direct_pair_alignment_offsets(schematic, comp)
-            gap_offsets = _gap_placement_offsets(schematic, comp)
-            origin_proxy = _proxy_score(schematic, series)
-            ranked: List[Tuple[float, Tuple[float, float], Dict[str, Tuple[float, float]], float]] = []
-            for dx, dy in offsets:
-                _restore(schematic, origin)
-                comp = schematic.components[cid]
-                comp.x = snap_to_grid(max(MARGIN, comp.x + dx))
-                comp.y = snap_to_grid(max(MARGIN, comp.y + dy))
-                _refit_small_parts(schematic, series, hub)
-                positions = _snapshot(schematic)
-                if positions == origin:
-                    continue
-                candidate_proxy = _proxy_score(schematic, series)
-                local_clearance = _local_clearance_penalty(schematic, cid, series)
-                ranked.append((candidate_proxy, (dx, dy), positions, local_clearance))
-            _restore(schematic, origin)
-            ranked.sort(key=lambda item: (item[0], abs(item[1][0]) + abs(item[1][1]), item[1]))
-            shortlist = []
-
-            def include(item) -> None:
-                if item is not None and all(item[2] != prior[2] for prior in shortlist):
-                    shortlist.append(item)
-
-            if ranked:
-                include(ranked[0])
-            gap_moves = [
-                item for item in ranked
-                if item[1] in gap_offsets
-                and item[1][0] != 0.0
-                and item[1][1] != 0.0
-                and item[0] <= origin_proxy + 2500.0
-            ]
-            if gap_moves:
-                include(min(gap_moves, key=lambda item: (item[0], abs(item[1][0]) + abs(item[1][1]), item[1])))
-            direct_aligned = [item for item in ranked if item[1] in direct_alignment_offsets]
-            if direct_aligned:
-                include(direct_aligned[0])
-            if ranked:
-                current_clearance = _local_clearance_penalty(schematic, cid, series)
-                clearance_moves = [item for item in ranked if item[3] + 1.0 < current_clearance]
-                if clearance_moves and (item := min(clearance_moves, key=lambda item: (item[3], item[0], item[1])))[3] + 1000.0 < current_clearance:
-                    include(item)
-                else:
-                    # One long deterministic probe can escape a local minimum
-                    # where wire distance alone keeps a useful move hidden.
-                    long_moves = [item for item in ranked if abs(item[1][0]) + abs(item[1][1]) >= 320.0]
-                    if long_moves and len(shortlist) < 2:
-                        include(long_moves[0])
-            shortlist = shortlist[:route_candidates]
-            best_layout = None
-            best_score = current_score
-            for _, _, positions, _ in shortlist:
-                _restore(schematic, positions)
-                _refit_small_parts(schematic, series, hub)
-                score, _, _ = _route_metrics(schematic, series)
-                if score + 1e-6 < best_score:
-                    best_score = score
-                    best_layout = _snapshot(schematic)
-            if best_layout is not None:
-                current = best_layout
-                current_score = best_score
-                changed = True
-            _restore(schematic, current)
-        if not changed:
-            break
-    _restore(schematic, current)
-    _refit_small_parts(schematic, series, hub)
-    allocate_pins_and_dimensions(schematic, use_geometry=True)
-    _resolve_equivalent_pins(schematic)
-    from schematic.layout.router import route_schematic
-    route_schematic(schematic)
-    return current_score
-
-
-class SchematicPlacer:
-    def __init__(self, schematic: Schematic):
-        self.schematic = schematic
-
-    def place(self) -> None:
-        comps = list(self.schematic.components.values())
-        if not comps:
-            self.schematic.width = 600.0
-            self.schematic.height = 400.0
-            return
-        allocate_pins_and_dimensions(self.schematic, use_geometry=False)
-        if len(comps) == 1:
-            comps[0].x = MARGIN
-            comps[0].y = MARGIN
-            allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-            self._finalize_bounds()
-            return
-
-        series, shunts = _classify_small_parts(self.schematic)
-        hub = _choose_hub(comps, self.schematic, series, shunts)
-        macro_ids = {c.id for c in comps if c.id not in series and c.id not in shunts}
-        if hub.id not in macro_ids:
-            macro_ids.add(hub.id)
-        graph = _build_graph(self.schematic, macro_ids, series)
-
-        # Optimize every deterministic start independently. Keeping only the
-        # best raw start and refining it once was a major source of local minima.
-        best_snapshot = None
-        best_score = math.inf
-        seed_count = 3 if len(macro_ids) > 3 else 1
-        for seed in range(seed_count):
-            _initial_layout(self.schematic, hub, graph, series, seed)
-            score = _optimize_with_routing(
-                self.schematic, macro_ids - {hub.id}, series, hub, passes=1, route_candidates=1
-            )
-            if score < best_score:
-                best_score = score
-                best_snapshot = _snapshot(self.schematic)
-
-        if best_snapshot:
-            _restore(self.schematic, best_snapshot)
-            _refit_small_parts(self.schematic, series, hub)
-            _optimize_with_routing(
-                self.schematic,
-                macro_ids - {hub.id},
-                series,
-                hub,
-                passes=1,
-                route_candidates=2,
-                reverse_order=True,
-            )
-            allocate_pins_and_dimensions(self.schematic, use_geometry=True)
-            _resolve_equivalent_pins(self.schematic)
-            from schematic.layout.router import route_schematic
-            route_schematic(self.schematic)
+        if not self.keep_positions:
+            for comp in self.comps.values():
+                comp.x, comp.y = 0.0, 0.0
+                default_sides(comp)
+                size_and_place_pins(comp)
+        self._resolve_connections()
+        self._classify()
+        self._apply_orientation_overrides()
+        groups = self._groups()
+        if self.keep_positions:
+            # Local refinement of an already placed drawing: keep the layout,
+            # apply the requested axis, re-slot satellites and legalise.
+            for g in groups:
+                g.pos = {cid: (self.comps[cid].x, self.comps[cid].y) for cid in g.comps}
+                self._configure(g)
+                self._legalize(g)
+            self._apply_kept(groups)
+        else:
+            for g in groups:
+                self._initial_layout(g, strategy)
+                if search:
+                    self._search(g)
+            self._pack(groups)
+            self._place_isolated()
+            self._apply()
         self._finalize_bounds()
 
-    def _finalize_bounds(self) -> None:
-        comps = list(self.schematic.components.values())
-        if not comps:
+    # ========================================================= connectivity
+    def _resolve_connections(self) -> None:
+        for net in self.sch.nets:
+            for conn in net.connections:
+                comp = self.comps.get(conn.component_id)
+                pin = resolve_pin(comp, conn.pin_id, conn.pin_name) if comp else None
+                if pin is not None:
+                    self.conn_pin[id(conn)] = pin.id
+                    conn.pin_id = pin.id
+
+    def _terminals(self, net) -> List[Tuple[str, str]]:
+        seen: Dict[Tuple[str, str], None] = {}
+        for conn in net.connections:
+            pid = self.conn_pin.get(id(conn))
+            if pid is not None:
+                seen.setdefault((conn.component_id, pid), None)
+        return list(seen)
+
+    def _owner(self, cid: str) -> str:
+        sat = self.sats.get(cid)
+        return sat.anchor if sat else cid
+
+    # ======================================================= classification
+    def _classify(self) -> None:
+        roles = self.sem.component_roles
+        hubs = self.sem.hubs
+        connected: Set[str] = set()
+        for net in self.sch.nets:
+            terms = self._terminals(net)
+            if len({c for c, _ in terms}) >= 2 or len(terms) >= 2:
+                connected.update(c for c, _ in terms)
+
+        for cid in self.comps:
+            if cid not in connected:
+                self.isolated.append(cid)
+
+        candidates = [c for c in self.comps if roles.get(c) in ("shunt", "decoupling") and c in connected]
+        for cid in candidates:
+            sat = self._make_satellite(cid, candidates, hubs)
+            if sat is not None:
+                self.sats[cid] = sat
+        self.macro = [c for c in self.comps if c in connected and c not in self.sats]
+        if not self.macro and self.sats:
+            # Nothing to hang the satellites on: place them as ordinary parts.
+            self.macro = sorted(self.sats, key=list(self.comps).index)
+            self.sats.clear()
+
+        self._assign_slots()
+        self._count_pair_nets()
+
+    def _count_pair_nets(self) -> None:
+        """Number of nets joining each pair of placeable components; corridors
+        between strongly connected parts must leave room for their jogs."""
+        self.pair_nets: Dict[Tuple[str, str], int] = {}
+        for net in self.sch.nets:
+            owners = sorted({self._owner(c) for c, _ in self._terminals(net)})
+            for i, a in enumerate(owners):
+                for b in owners[i + 1:]:
+                    self.pair_nets[(a, b)] = self.pair_nets.get((a, b), 0) + 1
+
+    def _choose_satellite_anchors(self, g: "_Group") -> None:
+        """Picks anchor pin and side for every satellite of a group.
+
+        A vertical part hanging off a wire walls in the neighbouring pins on
+        that side of the anchor, so the choice minimises walled-in connected
+        pins first, then deviations from the convention (supply up, ground
+        down), then prefers anchoring at the hub."""
+        members = set(g.comps)
+        connected = {(c, p) for net in self.sch.nets for c, p in self._terminals(net)
+                     if len(self._terminals(net)) >= 2}
+        changed = False
+        for cid in sorted(self.sats, key=list(self.comps).index):
+            sat = self.sats[cid]
+            options = []
+            body = self.comps[cid]
+            span = 40.0 + max(body.width, body.height)
+            far_info = self._pin_net_info(cid, sat.far_pin)
+            far_net_name = far_info.name if far_info is not None else None
+            for rank, (a, pid) in enumerate(sat.anchors):
+                if a not in members:
+                    continue
+                apin = self.comps[a].pins[pid]
+                for above in (sat.conventional_above, not sat.conventional_above):
+                    lo, hi = (apin.position.y - span, apin.position.y - 1) if above else \
+                        (apin.position.y + 1, apin.position.y + span)
+                    walled = 0.0
+                    seen_rails = set()
+                    for q in self.comps[a].pins.values():
+                        if q.id == pid or q.side != apin.side or (a, q.id) not in connected:
+                            continue
+                        if not (lo <= q.position.y <= hi):
+                            continue
+                        qinfo = self._pin_net_info(a, q.id)
+                        if qinfo is not None and qinfo.name == far_net_name:
+                            continue
+                        if qinfo is not None and qinfo.is_rail:
+                            if qinfo.name not in seen_rails:
+                                seen_rails.add(qinfo.name)
+                                walled += 0.25
+                        else:
+                            walled += 1.0
+                    score = (10.0 * walled + 12.0 * (above != sat.conventional_above)
+                             + (0.0 if a in self.sem.hubs else 1.0)
+                             + (6.0 if self.sem.component_roles.get(a) == "series" else 0.0)
+                             + (4.0 if apin.side in (Side.TOP, Side.BOTTOM) else 0.0) + 0.01 * rank)
+                    options.append((score, a, pid, above))
+            if not options:
+                continue
+            _, a, pid, above = min(options, key=lambda o: o[0])
+            if (a, pid, above) != (sat.anchor, sat.anchor_pin, sat.above):
+                sat.anchor, sat.anchor_pin, sat.above = a, pid, above
+                changed = True
+        if changed:
+            self._count_pair_nets()
+
+    def _assign_slots(self) -> None:
+        """Distinct slots along the wires for satellites on one side of an anchor."""
+        groups: Dict[Tuple[str, str], List[Satellite]] = {}
+        for sat in self.sats.values():
+            side = self.comps[sat.anchor].pins[sat.anchor_pin].side.value
+            groups.setdefault((sat.anchor, side), []).append(sat)
+        for lst in groups.values():
+            def order(s: Satellite):
+                pin = self.comps[s.anchor].pins[s.anchor_pin]
+                return (pin.order, not s.above, list(self.comps).index(s.comp))
+            lst.sort(key=order)
+            # Cumulative distances: each part needs its body plus its upright
+            # name / value labels before the next one can hang off the wire.
+            dist = self.cfg.spacing.satellite_offset
+            for i, s in enumerate(lst):
+                s.slot = i
+                s.dist = dist
+                dist += 40.0 + _ceil_grid(label_width(self.comps[s.comp])) + 20.0
+
+    def _make_satellite(self, cid: str, candidates: List[str], hubs: List[str]) -> Optional[Satellite]:
+        comp = self.comps[cid]
+        if len(comp.pins) != 2:
+            return None
+        role = self.sem.component_roles[cid]
+        pin_net: Dict[str, object] = {}
+        for net in self.sch.nets:
+            for t_cid, pid in self._terminals(net):
+                if t_cid == cid:
+                    pin_net[pid] = net
+        if len(pin_net) != 2:
+            return None
+        (p1, n1), (p2, n2) = sorted(pin_net.items())
+        i1, i2 = self.sem.nets[n1.name], self.sem.nets[n2.name]
+        if role == "shunt":
+            if comp.kind == "diode" and {i1.cls, i2.cls} == {NetClass.POWER, NetClass.GROUND}:
+                p_pwr, p_gnd, n_pwr, n_gnd = (p1, p2, n1, n2) if i1.cls == NetClass.POWER else (p2, p1, n2, n1)
+                near, far, near_net = p_pwr, p_gnd, n_pwr
+                above = False
+            else:
+                near, far, near_net, far_info = (p1, p2, n1, i2) if not i1.is_power_like else (p2, p1, n2, i1)
+                above = far_info.cls == NetClass.POWER
+        else:  # decoupling: hang below the supply pin it decouples
+            if i1.cls == NetClass.POWER:
+                near, far, near_net = p1, p2, n1
+            else:
+                near, far, near_net = p2, p1, n2
+            above = False
+        anchors = [
+            (t_cid, pid) for t_cid, pid in self._terminals(near_net)
+            if t_cid != cid and t_cid not in candidates
+        ]
+        if not anchors:
+            return None
+        hub_anchor = [a for a in anchors if a[0] in hubs]
+        anchor = (hub_anchor or anchors)[0]
+        return Satellite(comp=cid, anchor=anchor[0], anchor_pin=anchor[1], near_pin=near, far_pin=far,
+                         above=above, conventional_above=above, anchors=anchors)
+
+    def _groups(self) -> List[_Group]:
+        adj: Dict[str, Set[str]] = {c: set() for c in self.macro}
+        for net in self.sch.nets:
+            owners = sorted({self._owner(c) for c, _ in self._terminals(net)} & set(self.macro))
+            for a in owners:
+                for b in owners:
+                    if a != b:
+                        adj[a].add(b)
+        seen: Set[str] = set()
+        groups: List[_Group] = []
+        for c in self.macro:
+            if c in seen:
+                continue
+            comp_list: List[str] = []
+            stack = [c]
+            seen.add(c)
+            while stack:
+                n = stack.pop()
+                comp_list.append(n)
+                for m in sorted(adj[n]):
+                    if m not in seen:
+                        seen.add(m)
+                        stack.append(m)
+            order = list(self.comps)
+            comp_list.sort(key=order.index)
+            groups.append(_Group(comps=comp_list, hub=self._group_hub(comp_list)))
+        groups.sort(key=lambda g: (-len(g.comps), list(self.comps).index(g.comps[0])))
+        return groups
+
+    def _weights(self, comps: List[str]) -> Dict[Tuple[str, str], float]:
+        """Symmetric connection strength between components of a group."""
+        members = set(comps)
+        w: Dict[Tuple[str, str], float] = {}
+        for net in self.sch.nets:
+            info = self.sem.nets[net.name]
+            owners = sorted({self._owner(c) for c, _ in self._terminals(net)} & members)
+            k = len(owners)
+            if k < 2:
+                continue
+            factor = 0.15 if info.is_rail else 1.0
+            base = factor / (k - 1)
+            for i, a in enumerate(owners):
+                for b in owners[i + 1:]:
+                    w[(a, b)] = w.get((a, b), 0.0) + base
+                    w[(b, a)] = w.get((b, a), 0.0) + base
+        return w
+
+    def _group_hub(self, comps: List[str]) -> str:
+        w = self._weights(comps)
+        score = {c: 0.0 for c in comps}
+        for (a, _), v in w.items():
+            score[a] += v
+        for c in comps:
+            score[c] += 0.05 * len(self.comps[c].pins)
+        return max(comps, key=lambda c: (score[c], -list(self.comps).index(c)))
+
+    # ================================================== initial placement
+    def _initial_layout(self, g: _Group, strategy: Optional[str] = None) -> None:
+        """Builds the initial placement of a group.
+
+        * layered: port-aware columns grown from the hub (Sugiyama-style),
+          barycentric ordering and pin-aligning coordinates;
+        * stress: stress-majorization embedding of the connectivity graph.
+
+        Without an explicit strategy both are configured and legalised, then
+        scored with the estimated routing objective; the layered seed wins
+        ties because it is the more regular drawing."""
+        builders = {"layered": (self._embed_layered,), "stress": (self._embed,)}.get(
+            strategy or "", (self._embed_layered, self._embed))
+        candidates: List[Tuple[float, int, Dict[str, Pt], Dict[str, Tuple[Side, int]]]] = []
+        for rank, builder in enumerate(builders):
+            builder(g)
+            for _ in range(2):
+                self._configure(g)
+                self._legalize(g)
+                if builder == self._embed_layered:
+                    self._assign_coordinates(g)
+            score = self._estimator(g).total()
+            snapshot = {pid_key: (p.side, p.order) for pid_key, p in self._pin_items(g)}
+            candidates.append((score, rank, dict(g.pos), snapshot))
+        best = min(candidates, key=lambda c: (c[0], c[1]))
+        self._fp_cache.clear()
+        g.pos = dict(best[2])
+        for key, p in self._pin_items(g):
+            p.side, p.order = best[3][key]
+        for cid in g.comps:
+            comp = self.comps[cid]
+            comp.x, comp.y = g.pos[cid]
+            size_and_place_pins(comp)
+        self._assign_slots()
+        for sat in self.sats.values():
+            if sat.anchor in g.comps:
+                self._configure_satellite(sat)
+
+    def _pin_items(self, g: _Group):
+        members = list(g.comps) + [s for s, sat in self.sats.items() if sat.anchor in g.comps]
+        for cid in members:
+            for pid, p in self.comps[cid].pins.items():
+                yield (cid, pid), p
+
+    # ====================================================== global embedding
+
+    def _bus_mates(self, cid: str) -> List[str]:
+        """Components sharing a multi-drop (>= 3 parts) signal net with ``cid``."""
+        out: List[str] = []
+        for net in self.sch.nets:
+            if self.sem.nets[net.name].is_power_like:
+                continue
+            owners = sorted({self._owner(c) for c, _ in self._terminals(net)})
+            if cid in owners and len(owners) >= 3:
+                out.extend(o for o in owners if o != cid and o not in out)
+        return out
+
+    def _relation(self, a: str, b: str) -> Optional[Tuple[int, int]]:
+        """Direction from a to b implied by declared pin sides, if any."""
+        votes: Dict[Tuple[int, int], int] = {}
+        for net in self.sch.nets:
+            info = self.sem.nets[net.name]
+            if info.is_rail:
+                continue
+            terms = self._terminals(net)
+            owners = {self._owner(c) for c, _ in terms}
+            if not info.is_power_like and len(owners) >= 3 and self._hub in owners and a != self._hub and b != self._hub:
+                continue
+            ta = [p for c, p in terms if c == a]
+            tb = [p for c, p in terms if c == b]
+            if not ta or not tb:
+                continue
+            for pid in ta:
+                pin = self.comps[a].pins[pid]
+                if pin.side_specified:
+                    d = {Side.LEFT: (-1, 0), Side.RIGHT: (1, 0), Side.TOP: (0, -1), Side.BOTTOM: (0, 1)}[pin.side]
+                    votes[d] = votes.get(d, 0) + 1
+            for pid in tb:
+                pin = self.comps[b].pins[pid]
+                if pin.side_specified:
+                    d = {Side.LEFT: (1, 0), Side.RIGHT: (-1, 0), Side.TOP: (0, 1), Side.BOTTOM: (0, -1)}[pin.side]
+                    votes[d] = votes.get(d, 0) + 1
+        if not votes:
+            return None
+        return max(sorted(votes), key=lambda d: votes[d])
+
+    # =================================================== port configuration
+    def _peer_points(self, cid: str, pid: str, positions: Dict[str, Pt]) -> List[Pt]:
+        """Positions of everything a pin is wired to (pin terminals when known)."""
+        pts: List[Pt] = []
+        for net in self.sch.nets:
+            terms = self._terminals(net)
+            if (cid, pid) not in terms:
+                continue
+            info = self.sem.nets[net.name]
+            cand: List[Pt] = []
+            # A multi-drop signal net (bus) is drawn as taps off the source's
+            # line, so a device's pin faces the source, not its fellow devices.
+            source = None
+            if not info.is_power_like and len(terms) >= 3 and self._hub is not None and cid != self._hub:
+                source = [(c, p) for c, p in terms if c == self._hub]
+            for c, p in (source or terms):
+                if c == cid:
+                    continue
+                owner = self._owner(c)
+                if owner == cid and c in self.sats:
+                    continue  # own satellite: follows this pin, not a direction hint
+                if owner not in positions:
+                    continue
+                cand.append(self._terminal_abs(c, p, positions))
+            if info.is_rail and len(cand) > 2:
+                me = self._terminal_abs(cid, pid, positions)
+                cand.sort(key=lambda q: abs(q[0] - me[0]) + abs(q[1] - me[1]))
+                cand = cand[:2]
+            elif info.is_power_like and not info.is_rail and len(cand) > 1:
+                me = self._terminal_abs(cid, pid, positions)
+                cand.sort(key=lambda q: abs(q[0] - me[0]) + abs(q[1] - me[1]))
+                cand = cand[:1]
+            pts.extend(cand)
+        return pts
+
+    def _terminal_abs(self, cid: str, pid: str, positions: Dict[str, Pt]) -> Pt:
+        comp = self.comps[cid]
+        if cid in self.sats:
+            sat = self.sats[cid]
+            ax, ay = positions.get(sat.anchor, (0.0, 0.0))
+            x, y = ax + sat.rel[0], ay + sat.rel[1]
+        else:
+            x, y = positions.get(cid, (comp.x, comp.y))
+        p = comp.pins[pid]
+        return x + (p.position.x - comp.x), y + (p.position.y - comp.y)
+
+    def _configure(self, g: _Group) -> None:
+        """Assigns free pin sides / orders from geometry and resizes components."""
+        self._fp_cache.clear()
+        self._hub = g.hub
+        positions = g.pos
+        self._resolve_equivalent(g.comps, positions)
+        for cid in g.comps:
+            comp = self.comps[cid]
+            cx = positions[cid][0] + comp.width / 2.0
+            cy = positions[cid][1] + comp.height / 2.0
+            if comp.is_standard and len(comp.pins) == 2:
+                if cid in self._forced_orientations:
+                    self._force_axis(comp, self._forced_orientations[cid])
+                else:
+                    self._orient_passive(comp, cx, cy, positions)
+            elif comp.kind == "switch" and len(comp.pins) == 3:
+                common = switch_common(comp)
+                pts = self._peer_points(cid, common.id, positions)
+                if pts:
+                    mx = sum(p[0] for p in pts) / len(pts)
+                    orient_switch(comp, Side.LEFT if mx < cx else Side.RIGHT)
+            else:
+                hub = self.comps[g.hub]
+                hub_cx = positions[g.hub][0] + hub.width / 2.0
+                stacked = self._stacked_rails(cid, g) if self.cfg.outer_rail_pins and cid != g.hub else set()
+                rail_pins: List[Pin] = []
+                for pin in comp.pins.values():
+                    if pin.side_specified:
+                        continue
+                    info = self._pin_net_info(cid, pin.id)
+                    if info is not None and info.name in stacked:
+                        rail_pins.append(pin)
+                        continue
+                    pts = self._peer_points(cid, pin.id, positions)
+                    if not pts:
+                        continue
+                    mx = sum(p[0] for p in pts) / len(pts)
+                    if abs(mx - cx) <= comp.width / 2.0 and cid != g.hub and abs(cx - hub_cx) > 1.0:
+                        # Peer directly above / below: use the outer side, so stacked
+                        # parts connect with a U outside instead of looping round.
+                        pin.side = Side.LEFT if cx < hub_cx else Side.RIGHT
+                    elif abs(mx - cx) > 1.0:
+                        pin.side = Side.LEFT if mx < cx else Side.RIGHT
+                if rail_pins:
+                    # Supply pins of parts stacked in a column go to the side away
+                    # from their signals: the bus keeps the inner corridor and the
+                    # rails get a clean trunk outside instead of a crossing comb.
+                    sig = [p.side for p in comp.pins.values()
+                           if p not in rail_pins and p.side in (Side.LEFT, Side.RIGHT)
+                           and self._pin_net_info(cid, p.id) is not None]
+                    if sig:
+                        inner = Side.LEFT if sig.count(Side.LEFT) >= sig.count(Side.RIGHT) else Side.RIGHT
+                    else:
+                        inner = Side.LEFT if cx > hub_cx else Side.RIGHT
+                    for pin in rail_pins:
+                        pin.side = OPPOSITE[inner]
+
+            def effective_y(q: Pt, cid=cid, cx=cx, cy=cy) -> float:
+                qx, qy = q
+                x_lo, x_hi = min(cx, qx), max(cx, qx)
+                for other in g.comps:
+                    if other == cid:
+                        continue
+                    oc = self.comps[other]
+                    ox, oy = positions[other]
+                    if ox > x_lo and ox + oc.width < x_hi and oy <= qy <= oy + oc.height:
+                        y_top, y_bot = oy - 20.0, oy + oc.height + 20.0
+                        yd = y_top if abs(cy - y_top) + abs(qy - y_top) <= abs(cy - y_bot) + abs(qy - y_bot) else y_bot
+                        return yd + 0.05 * (qy - oy)
+                return qy
+
+            def key(pin: Pin, cid=cid) -> float:
+                info = self._pin_net_info(cid, pin.id)
+                if info is not None and info.is_rail:
+                    return -1e6 if info.cls == NetClass.POWER else 1e6
+                pts = self._peer_points(cid, pin.id, positions)
+                if not pts:
+                    return 5e5
+                if pin.side in (Side.LEFT, Side.RIGHT):
+                    return sum(effective_y(p) for p in pts) / len(pts)
+                return sum(p[0] for p in pts) / len(pts)
+
+            if not (comp.is_standard and len(comp.pins) <= 3):
+                apply_order(comp, key)
+            # Resize around the current centre.
+            old_w, old_h = comp.width, comp.height
+            comp.x, comp.y = positions[cid]
+            size_and_place_pins(comp)
+            if (comp.width, comp.height) != (old_w, old_h):
+                nx = snap(positions[cid][0] + (old_w - comp.width) / 2.0)
+                ny = snap(positions[cid][1] + (old_h - comp.height) / 2.0)
+                positions[cid] = (nx, ny)
+                comp.x, comp.y = nx, ny
+                size_and_place_pins(comp)
+        self._choose_satellite_anchors(g)
+        self._assign_slots()
+        for sat in self.sats.values():
+            if sat.anchor in g.comps:
+                self._configure_satellite(sat)
+
+    def _stacked_rails(self, cid: str, g: _Group) -> Set[str]:
+        """Rail nets this part shares with another part stacked in its column."""
+        fa = self._abs_fp(cid, g.pos[cid])
+        mine: Dict[str, None] = {}
+        for net in self.sch.nets:
+            info = self.sem.nets[net.name]
+            if info.is_rail and any(c == cid for c, _ in self._terminals(net)):
+                mine[net.name] = None
+        out: Set[str] = set()
+        if not mine:
+            return out
+        for other in g.comps:
+            if other in (cid, g.hub):
+                continue
+            fb = self._abs_fp(other, g.pos[other])
+            if min(fa[2], fb[2]) - max(fa[0], fb[0]) <= 0:
+                continue
+            for net in self.sch.nets:
+                if net.name in mine and any(c == other for c, _ in self._terminals(net)):
+                    out.add(net.name)
+        return out
+
+    def _pin_net_info(self, cid: str, pid: str):
+        for net in self.sch.nets:
+            if (cid, pid) in self._terminals(net):
+                return self.sem.nets[net.name]
+        return None
+
+    def _orient_passive(self, comp: Component, cx: float, cy: float, positions: Dict[str, Pt]) -> None:
+        if any(p.side_specified for p in comp.pins.values()):
             return
-        self.schematic.width = max(max(c.x + c.width for c in comps) + MARGIN, 850.0)
-        self.schematic.height = max(max(c.y + c.height for c in comps) + MARGIN, 600.0)
+        p1, p2 = list(comp.pins.values())
+        pts1 = self._peer_points(comp.id, p1.id, positions)
+        pts2 = self._peer_points(comp.id, p2.id, positions)
+        c1 = (sum(p[0] for p in pts1) / len(pts1), sum(p[1] for p in pts1) / len(pts1)) if pts1 else None
+        c2 = (sum(p[0] for p in pts2) / len(pts2), sum(p[1] for p in pts2) / len(pts2)) if pts2 else None
+        if c1 is None and c2 is None:
+            return
+        if c1 is not None and c2 is not None:
+            dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+            ux1, uy1 = c1[0] - cx, c1[1] - cy
+            ux2, uy2 = c2[0] - cx, c2[1] - cy
+            # If the two peers straddle the component horizontally (one to the left,
+            # one to the right), signal flows through horizontally.
+            if ux1 * ux2 < 0 and _can_be_vertical(comp) and abs(dy) > 2.0 * abs(dx):
+                orient_two_pin(comp, p1, Side.TOP if dy > 0 else Side.BOTTOM)
+                return
+            if ux1 * ux2 < 0:
+                orient_two_pin(comp, p1, Side.LEFT if dx >= 0 else Side.RIGHT)
+                return
+            # If the two peers straddle vertically (one above, one below):
+            if uy1 * uy2 < 0 and _can_be_vertical(comp):
+                orient_two_pin(comp, p1, Side.TOP if dy > 0 else Side.BOTTOM)
+                return
+        elif c1 is not None:
+            dx, dy = cx - c1[0], cy - c1[1]
+        else:
+            dx, dy = c2[0] - cx, c2[1] - cy
+        if abs(dy) > 1.5 * abs(dx) and _can_be_vertical(comp):
+            orient_two_pin(comp, p1, Side.TOP if dy > 0 else Side.BOTTOM)
+        else:
+            orient_two_pin(comp, p1, Side.LEFT if dx >= 0 else Side.RIGHT)
+
+    def _configure_satellite(self, sat: Satellite) -> None:
+        self._fp_cache.clear()
+        comp = self.comps[sat.comp]
+        near, far = comp.pins[sat.near_pin], comp.pins[sat.far_pin]
+        anchor = self.comps[sat.anchor]
+        apin = anchor.pins[sat.anchor_pin]
+        if not (near.side_specified or far.side_specified):
+            if _can_be_vertical(comp):
+                orient_two_pin(comp, near, Side.BOTTOM if sat.above else Side.TOP)
+            else:
+                orient_two_pin(comp, near, Side.LEFT if apin.side != Side.LEFT else Side.RIGHT)
+        comp.x, comp.y = 0.0, 0.0
+        size_and_place_pins(comp)
+        # Geometry relative to the anchor's top-left corner.
+        ax, ay = apin.position.x - anchor.x, apin.position.y - anchor.y
+        out = {Side.LEFT: (-1, 0), Side.RIGHT: (1, 0), Side.TOP: (0, -1), Side.BOTTOM: (0, 1)}[apin.side]
+        dist = sat.dist
+        if out[1] == 0:
+            wire_x = ax + out[0] * dist
+            npx, npy = near.position.x - comp.x, near.position.y - comp.y
+            if near.side in (Side.TOP, Side.BOTTOM):
+                siblings = [
+                    s for s in self.sats.values()
+                    if s.anchor == sat.anchor and s.anchor_pin == sat.anchor_pin and s.above == sat.above
+                ]
+                min_h = min(self.comps[s.comp].height for s in siblings)
+                max_h = max(self.comps[s.comp].height for s in siblings)
+                target_far_dist = max(40.0 + min_h, 20.0 + max_h)
+                stub = target_far_dist - comp.height
+                pin_y = ay - stub if sat.above else ay + stub
+                sat.rel = (snap(wire_x - npx), snap(pin_y - npy))
+            else:
+                pin_y = ay - 60.0 if sat.above else ay + 60.0
+                sat.rel = (snap(wire_x - npx), snap(pin_y - npy))
+        else:
+            wire_y = ay + out[1] * dist
+            npx, npy = near.position.x - comp.x, near.position.y - comp.y
+            sat.rel = (snap(ax + 60.0 - npx), snap(wire_y - npy))
+
+    # ==================================================== orientation variants
+    def orientation_variants(self) -> List[Tuple[str, bool]]:
+        """Ambiguous free 2-pin standard parts and the axis worth testing.
+
+        Expects a placed schematic.  The selection is based on peer
+        directions only; the engine places, routes and scores every returned
+        variant like any other candidate, so this heuristic never has the
+        final word.  The most ambiguous parts come first.
+        """
+        if self.cfg.orientation_candidates <= 0:
+            return []
+        self._resolve_connections()
+        self._classify()
+        positions = {cid: (c.x, c.y) for cid, c in self.comps.items()}
+        for cid, sat in self.sats.items():
+            ax, ay = positions.get(sat.anchor, (0.0, 0.0))
+            sat.rel = (self.comps[cid].x - ax, self.comps[cid].y - ay)
+        hubs: Dict[str, str] = {}
+        for g in self._groups():
+            for cid in g.comps:
+                hubs[cid] = g.hub
+        scored = []
+        for cid, comp in self.comps.items():
+            if cid in self.sats or not (comp.is_standard and len(comp.pins) == 2):
+                continue
+            if any(p.side_specified for p in comp.pins.values()) or not _can_be_vertical(comp):
+                continue
+            self._hub = hubs.get(cid)
+            if not self._macro_flip_ambiguous(cid, positions):
+                continue
+            p1, p2 = list(comp.pins.values())
+            vertical = p1.side in (Side.TOP, Side.BOTTOM) and p2.side in (Side.TOP, Side.BOTTOM)
+            c1 = self._peer_centroid(cid, p1.id, positions)
+            c2 = self._peer_centroid(cid, p2.id, positions)
+            both = False
+            ratio = 99.0
+            if c1 is not None and c2 is not None:
+                cx, cy = comp.x + comp.width / 2.0, comp.y + comp.height / 2.0
+                both = (c1[0] - cx) * (c2[0] - cx) < 0 and (c1[1] - cy) * (c2[1] - cy) < 0
+                dx, dy = abs(c2[0] - c1[0]), abs(c2[1] - c1[1])
+                ratio = max(dx, dy) / max(1.0, min(dx, dy))
+            scored.append((0 if both else 1, ratio, list(self.comps).index(cid),
+                           cid, not vertical, hubs.get(cid, cid)))
+        scored.sort(key=lambda e: e[:3])
+        # Spread the limited trials over groups first, then fill up with the
+        # next most ambiguous parts of the same group.
+        limit = self.cfg.orientation_candidates
+        selected = []
+        seen_groups = set()
+        for entry in scored:
+            if entry[5] not in seen_groups and len(selected) < limit:
+                selected.append(entry)
+                seen_groups.add(entry[5])
+        for entry in scored:
+            if entry not in selected and len(selected) < limit:
+                selected.append(entry)
+        return [(entry[3], entry[4]) for entry in selected]
+
+    def _macro_flip_ambiguous(self, cid: str, positions: Dict[str, Pt]) -> bool:
+        """True when both axes are plausible from the two peer directions.
+
+        Used by the engine to decide which 2-pin parts get an alternative
+        orientation routed as a candidate; the real score, not this test,
+        makes the final choice."""
+        comp = self.comps[cid]
+        p1, p2 = list(comp.pins.values())
+        c1 = self._peer_centroid(cid, p1.id, positions)
+        c2 = self._peer_centroid(cid, p2.id, positions)
+        if c1 is None or c2 is None:
+            return False
+        px, py = positions[cid]
+        cx, cy = px + comp.width / 2.0, py + comp.height / 2.0
+        dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+        ux1, uy1 = c1[0] - cx, c1[1] - cy
+        ux2, uy2 = c2[0] - cx, c2[1] - cy
+        if ux1 * ux2 < 0 and uy1 * uy2 < 0:
+            return True
+        if abs(dx) > 0 and abs(dy) > 0:
+            return max(abs(dx), abs(dy)) < 2.0 * min(abs(dx), abs(dy))
+        return False
+
+    def _peer_centroid(self, cid: str, pid: str, positions: Dict[str, Pt]) -> Optional[Pt]:
+        pts = self._peer_points(cid, pid, positions)
+        if not pts:
+            return None
+        return (sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts))
+
+    def _apply_orientation_overrides(self) -> None:
+        """Pins an already chosen axis for the parts of a routed candidate.
+
+        Used by the engine's orientation candidates: the normal heuristic must
+        not overwrite the axis that the candidate is meant to test.  Declared
+        pin sides always win, and satellites keep their conventional axis.
+        """
+        self._forced_orientations.clear()
+        for cid, vertical in self.orientation_overrides.items():
+            comp = self.comps.get(cid)
+            if comp is None or cid in self.sats:
+                continue
+            if not (comp.is_standard and len(comp.pins) == 2):
+                continue
+            if any(p.side_specified for p in comp.pins.values()):
+                continue
+            self._forced_orientations[cid] = vertical
+
+    def _force_axis(self, comp: Component, vertical: bool) -> None:
+        p1, p2 = list(comp.pins.values())
+        if vertical:
+            new1 = Side.TOP if p1.side in (Side.LEFT, Side.TOP) else Side.BOTTOM
+        else:
+            new1 = Side.LEFT if p1.side in (Side.LEFT, Side.TOP) else Side.RIGHT
+        p1.side, p2.side = new1, OPPOSITE[new1]
+        p1.order = p2.order = 0
+
+    def _resolve_equivalent(self, comps: List[str], positions: Dict[str, Pt]) -> None:
+        members = set(comps) | {s for s, sat in self.sats.items() if sat.anchor in comps}
+        for net in self.sch.nets:
+            for conn in net.connections:
+                if conn.component_id not in members:
+                    continue
+                comp = self.comps[conn.component_id]
+                matching = comp.get_pins_by_name(conn.pin_name)
+                if len(matching) <= 1:
+                    continue
+                peers: List[Pt] = []
+                peer_ids = [p for p in conn.peer_component_ids if p != comp.id] or [
+                    c.component_id for c in net.connections if c.component_id != comp.id
+                ]
+                for pid in peer_ids:
+                    owner = self._owner(pid) if pid in self.comps else None
+                    if owner in positions:
+                        pc = self.comps[pid]
+                        ox, oy = positions[owner]
+                        peers.append((ox + pc.width / 2.0, oy + pc.height / 2.0))
+                if not peers:
+                    continue
+                base = positions.get(comp.id, (comp.x, comp.y))
+                best = min(
+                    matching,
+                    key=lambda p: (
+                        min(abs(base[0] + p.position.x - comp.x - q[0]) + abs(base[1] + p.position.y - comp.y - q[1])
+                            for q in peers),
+                        p.id,
+                    ),
+                )
+                conn.pin_id = best.id
+                self.conn_pin[id(conn)] = best.id
+
+    # ========================================================= legalization
+    def _footprint(self, cid: str) -> Rect:
+        """Body + pin leads + attached satellites, relative to the top-left."""
+        cached = self._fp_cache.get(cid)
+        if cached is not None:
+            return cached
+        fp = self._compute_footprint(cid)
+        self._fp_cache[cid] = fp
+        return fp
+
+    def _compute_footprint(self, cid: str) -> Rect:
+        comp = self.comps[cid]
+        x1, y1, x2, y2 = 0.0, 0.0, comp.width, comp.height
+        for p in comp.pins.values():
+            px, py = p.position.x - comp.x, p.position.y - comp.y
+            x1, y1, x2, y2 = min(x1, px), min(y1, py), max(x2, px), max(y2, py)
+        for sat in self.sats.values():
+            if sat.anchor == cid:
+                s = self.comps[sat.comp]
+                sx, sy = sat.rel
+                x1, y1 = min(x1, sx - 20.0), min(y1, sy)
+                x2 = max(x2, sx + s.width + 20.0 + label_width(s))
+                y2 = max(y2, sy + s.height)
+        return x1, y1, x2, y2
+
+    def _abs_fp(self, cid: str, pos: Pt) -> Rect:
+        f = self._footprint(cid)
+        return pos[0] + f[0], pos[1] + f[1], pos[0] + f[2], pos[1] + f[3]
+
+    def _gaps(self, a: str, b: str) -> Tuple[float, float]:
+        """Required (horizontal, vertical) clearance between two footprints.
+
+        Footprints include the pin terminals, so the horizontal gap is the
+        terminal-to-terminal corridor width: two escape columns plus free
+        tracks for every wire that may have to jog between the two parts."""
+        sp = self.cfg.spacing
+        key = (a, b) if a < b else (b, a)
+        n = self.pair_nets.get(key, 0)
+        hg = sp.min_h_gap + sp.track_gap * min(6, max(0, n - 2))
+        return hg, sp.min_v_gap
+
+    def _conflict(self, fa: Rect, fb: Rect, gaps: Tuple[float, float] = None, connected: bool = False) -> bool:
+        """True when two footprints are too close.
+
+        Parts that are wired to each other must either be stacked (their x
+        ranges overlap, wires run beside them) or keep a full corridor
+        between them: a diagonal arrangement with a narrow horizontal gap
+        leaves no tracks for the jogs between their facing pins."""
+        hg, vg = gaps if gaps is not None else (self.cfg.spacing.min_h_gap, self.cfg.spacing.min_v_gap)
+        if fa[2] + hg <= fb[0] or fb[2] + hg <= fa[0]:
+            return False
+        if fa[3] + vg <= fb[1] or fb[3] + vg <= fa[1]:
+            if not connected:
+                return False
+            return not (min(fa[2], fb[2]) - max(fa[0], fb[0]) > 0)
+        return True
+
+    def _legalize(self, g: _Group) -> None:
+        comps = g.comps
+        for _ in range(300):
+            changed = False
+            cx = sum(g.pos[c][0] for c in comps) / len(comps)
+            cy = sum(g.pos[c][1] for c in comps) / len(comps)
+            for i, a in enumerate(comps):
+                for b in comps[i + 1:]:
+                    fa, fb = self._abs_fp(a, g.pos[a]), self._abs_fp(b, g.pos[b])
+                    hg, vg = self._gaps(a, b)
+                    if not self._conflict(fa, fb, (hg, vg), self._connected(a, b)):
+                        continue
+                    # Move the component that is further from the group centre.
+                    da = abs(fa[0] + fa[2] - 2 * cx) + abs(fa[1] + fa[3] - 2 * cy)
+                    db = abs(fb[0] + fb[2] - 2 * cx) + abs(fb[1] + fb[3] - 2 * cy)
+                    mover, fixed, fm, ff = (b, a, fb, fa) if db >= da else (a, b, fa, fb)
+                    options = [
+                        (ff[2] + hg - fm[0], 0.0),
+                        (-(fm[2] + hg - ff[0]), 0.0),
+                        (0.0, ff[3] + vg - fm[1]),
+                        (0.0, -(fm[3] + vg - ff[1])),
+                    ]
+                    mcx, mcy = (fm[0] + fm[2]) / 2.0, (fm[1] + fm[3]) / 2.0
+                    fcx, fcy = (ff[0] + ff[2]) / 2.0, (ff[1] + ff[3]) / 2.0
+
+                    def cost(o: Pt) -> float:
+                        # Prefer the cheapest push that moves away from the fixed part.
+                        away = (o[0] * (mcx - fcx) + o[1] * (mcy - fcy)) >= 0
+                        return abs(o[0]) + abs(o[1]) + (0.0 if away else 1e4)
+
+                    dx, dy = min(options, key=lambda o: (cost(o), o))
+                    px, py = g.pos[mover]
+                    g.pos[mover] = (snap(px + _ceil_grid(dx)), snap(py + _ceil_grid(dy)))
+                    changed = True
+            if not changed:
+                break
+
+    def _legal(self, g: _Group, cid: str, pos: Pt, ignore: Tuple[str, ...] = ()) -> bool:
+        fa = self._abs_fp(cid, pos)
+        for other in g.comps:
+            if other == cid or other in ignore:
+                continue
+            if self._conflict(fa, self._abs_fp(other, g.pos[other]), self._gaps(cid, other),
+                              self._connected(cid, other)):
+                return False
+        return True
+
+    def _connected(self, a: str, b: str) -> bool:
+        return self.pair_nets.get((a, b) if a < b else (b, a), 0) > 0
+
+    # ========================================================= local search
+
+    # =============================================================== packing
+    def _group_bbox(self, g: _Group) -> Rect:
+        rects = [self._abs_fp(c, g.pos[c]) for c in g.comps]
+        return (min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects))
+
+    def _pack(self, groups: List[_Group]) -> None:
+        if not groups:
+            return
+        gap = self.cfg.spacing.group_gap
+        boxes = [self._group_bbox(g) for g in groups]
+        total = sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)
+        row_limit = max(boxes[0][2] - boxes[0][0], math.sqrt(total) * 1.6)
+        x, y, row_h = 0.0, 0.0, 0.0
+        for g, b in zip(groups, boxes):
+            w, h = b[2] - b[0], b[3] - b[1]
+            if x > 0 and x + w > row_limit:
+                x, y, row_h = 0.0, y + row_h + gap, 0.0
+            dx, dy = snap(x - b[0]), snap(y - b[1])
+            for c in g.comps:
+                px, py = g.pos[c]
+                self.pos[c] = (px + dx, py + dy)
+            x += w + gap
+            row_h = max(row_h, h)
+
+    def _place_isolated(self) -> None:
+        if not self.isolated:
+            return
+        rects = [self._abs_fp(c, self.pos[c]) for c in self.pos]
+        y0 = (max(r[3] for r in rects) + self.cfg.spacing.group_gap) if rects else 0.0
+        x0 = min((r[0] for r in rects), default=0.0)
+        x = x0
+        for cid in self.isolated:
+            comp = self.comps[cid]
+            size_and_place_pins(comp)
+            f = self._footprint(cid)
+            self.pos[cid] = (snap(x - f[0]), snap(y0 - f[1]))
+            x += (f[2] - f[0]) + self.cfg.spacing.isolated_gap
+
+    # ============================================================== finalize
+    def _apply_kept(self, groups: List[_Group]) -> None:
+        """Writes configured positions back without re-packing or margins.
+
+        Used by keep-position refinement, where the drawing must stay exactly
+        where it is and only the requested local change may move parts.
+        """
+        for g in groups:
+            for cid in g.comps:
+                comp = self.comps[cid]
+                comp.x, comp.y = g.pos[cid]
+                size_and_place_pins(comp)
+            for cid, sat in self.sats.items():
+                if sat.anchor in g.comps:
+                    ax, ay = g.pos[sat.anchor]
+                    comp = self.comps[cid]
+                    comp.x, comp.y = snap(ax + sat.rel[0]), snap(ay + sat.rel[1])
+                    size_and_place_pins(comp)
+
+    def _apply(self) -> None:
+        for sat in self.sats.values():
+            ax, ay = self.pos[sat.anchor]
+            self.pos[sat.comp] = (ax + sat.rel[0], ay + sat.rel[1])
+        fps = [self._abs_fp(c, self.pos[c]) if c not in self.sats else
+               (self.pos[c][0] - 20.0, self.pos[c][1] - 20.0,
+                self.pos[c][0] + self.comps[c].width + 20.0, self.pos[c][1] + self.comps[c].height + 20.0)
+               for c in self.pos]
+        min_x = min(f[0] for f in fps)
+        min_y = min(f[1] for f in fps)
+        margin = self.cfg.spacing.margin
+        dx, dy = snap(margin - min_x), snap(margin - min_y)
+        for cid, (x, y) in self.pos.items():
+            comp = self.comps[cid]
+            comp.x, comp.y = snap(x + dx), snap(y + dy)
+            size_and_place_pins(comp)
+        all_pos = {c: (self.comps[c].x, self.comps[c].y) for c in self.pos}
+        self._resolve_equivalent(list(self.comps), all_pos)
+
+    def _finalize_bounds(self) -> None:
+        comps = list(self.comps.values())
+        max_x = max(max(c.x + c.width, *(p.position.x for p in c.pins.values())) if c.pins else c.x + c.width
+                    for c in comps)
+        max_y = max(max(c.y + c.height, *(p.position.y for p in c.pins.values())) if c.pins else c.y + c.height
+                    for c in comps)
+        self.sch.width = max_x + self.cfg.spacing.margin
+        self.sch.height = max_y + self.cfg.spacing.margin
 
 
-def place_schematic(schematic: Schematic) -> None:
-    SchematicPlacer(schematic).place()
+def _ceil_grid(v: float) -> float:
+    if v >= 0:
+        return math.ceil(v / GRID_SIZE - 1e-9) * GRID_SIZE
+    return -math.ceil(-v / GRID_SIZE - 1e-9) * GRID_SIZE
+
+
+def label_width(comp: Component) -> float:
+    """Width of the upright name / value text drawn beside a standard part."""
+    return max(len(comp.id) * 6.5, len(comp.value) * 5.6) + 14.0
+
+
+def _can_be_vertical(comp: Component) -> bool:
+    return comp.kind in ("resistor", "capacitor", "inductor", "diode", "led", "fuse")
+
+
+def place_schematic(schematic: Schematic, config: Optional[LayoutConfig] = None,
+                    semantics: Optional[Semantics] = None) -> None:
+    """Places all components (sizes, pin sides and coordinates)."""
+    from schematic.layout.normalize import merge_shared_pin_nets
+
+    if merge_shared_pin_nets(schematic):
+        semantics = None
+    Placer(schematic, semantics=semantics, config=config).place()

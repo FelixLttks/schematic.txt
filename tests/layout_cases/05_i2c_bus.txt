@@ -1,0 +1,30 @@
+# 05 - Bus-like structure
+# One I2C bus shared by four devices, with pull-up resistors and a shared
+# supply. A good drawing shows SDA and SCL as two parallel trunks with
+# regular taps; the pull-ups hang off the bus towards the supply.
+
+MCU: RP2040
+  pins: 3V3, GND, GP4(SDA), GP5(SCL)
+
+RSDA: resistor 4.7k
+  pins: 1, 2
+
+RSCL: resistor 4.7k
+  pins: 1, 2
+
+Temp: TMP117 Sensor
+  pins: VCC, GND, SDA, SCL
+
+RTC: DS3231 RTC
+  pins: VCC, GND, SDA, SCL
+
+EEPROM: 24LC256 EEPROM
+  pins: VCC, GND, SDA, SCL
+
+OLED: SSD1306 OLED
+  pins: VCC, GND, SDA, SCL
+
+MCU.GP4 -> Temp.SDA, RTC.SDA, EEPROM.SDA, OLED.SDA, RSDA.2 : I2C_SDA
+MCU.GP5 -> Temp.SCL, RTC.SCL, EEPROM.SCL, OLED.SCL, RSCL.2 : I2C_SCL
+MCU.3V3 -> Temp.VCC, RTC.VCC, EEPROM.VCC, OLED.VCC, RSDA.1, RSCL.1 : 3V3
+MCU.GND -> Temp.GND, RTC.GND, EEPROM.GND, OLED.GND : GND

@@ -1,0 +1,25 @@
+# 09 - Isolated components
+# A small connected circuit plus parts without any connection (spare
+# header, mounting hole, logo). Isolated parts must not disturb the main
+# drawing and must not overlap anything.
+
+MCU: ATtiny85
+  pins: VCC, GND, PB0, PB1
+
+LED: led red
+  pins: A, K
+
+Rled: resistor 330R
+  pins: 1, 2
+
+Spare: Spare Header
+  pins: 1, 2, 3, 4
+
+Hole: M3 Mounting Hole
+  pins: MH
+
+Logo: Board Logo
+
+MCU.PB0 -> Rled.1 : LED_DRV
+Rled.2 -> LED.A : LED_A
+LED.K -> MCU.GND : GND

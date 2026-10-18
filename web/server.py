@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
-from schematic import ParseError, generate_schematic_svg
+from schematic import ParseError
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -79,38 +79,40 @@ class SchematicHandler(BaseHTTPRequestHandler):
             code = req.get("code", "")
             dark_theme = req.get("dark_theme", True)
 
-            # Hot-reload schematic modules so edits take effect immediately
+            # Hot-reload the whole schematic package so code edits take effect
+            # immediately: drop every cached submodule and import afresh.
             import importlib
-            import schematic
-            import schematic.models
-            import schematic.parser
-            import schematic.layout.pin_allocator
-            import schematic.layout.placer
-            import schematic.layout.router
-            import schematic.renderer.svg
-            importlib.reload(schematic.models)
-            importlib.reload(schematic.parser)
-            importlib.reload(schematic.layout.pin_allocator)
-            importlib.reload(schematic.layout.placer)
-            importlib.reload(schematic.layout.router)
-            importlib.reload(schematic.renderer.svg)
-            importlib.reload(schematic)
+            import sys
 
-            svg = schematic.generate_schematic_svg(code, dark_theme=dark_theme)
-            self._send_json({"status": "ok", "svg": svg})
-        except ParseError as exc:
-            self._send_json(
-                {
-                    "status": "error",
-                    "error": {
-                        "type": "parse_error",
-                        "message": exc.message,
-                        "line": exc.line_num,
-                        "line_content": exc.line_content,
-                    },
-                }
+            for name in [m for m in sys.modules if m == "schematic" or m.startswith("schematic.")]:
+                del sys.modules[name]
+            schematic = importlib.import_module("schematic")
+            config = importlib.import_module("schematic.layout.config")
+
+            effort = req.get("effort", "balanced")
+            if effort not in config.EFFORT_LEVELS:
+                effort = "balanced"
+            svg = schematic.generate_schematic_svg(
+                code, dark_theme=dark_theme, config=config.config_for_effort(effort)
             )
+            self._send_json({"status": "ok", "svg": svg})
         except Exception as exc:
+            # Matched by name: after a hot reload the parser raises a freshly
+            # created ParseError class, not the one imported at start-up.
+            if isinstance(exc, ParseError) or type(exc).__name__ == "ParseError":
+                self._send_json(
+                    {
+                        "status": "error",
+                        "error": {
+                            "type": "parse_error",
+                            "message": exc.message,
+                            "line": exc.line_num,
+                            "line_content": exc.line_content,
+                        },
+                    }
+                )
+                return
+
             self._send_json(
                 {
                     "status": "error",

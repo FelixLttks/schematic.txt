@@ -1,0 +1,36 @@
+# 07 - Crossing-prone nets
+# Pin orders are fixed and partly mirrored, and three devices share
+# interleaved hub pins. Some crossings are unavoidable; a good drawing keeps
+# them few, orthogonal and grouped instead of producing a tangle.
+
+Hub: Expansion Controller
+  right: P1, P2, P3, P4, P5, P6
+  left: Q1, Q2, Q3, Q4
+
+DevA: Device A
+  pins: X, Y
+
+DevB: Device B
+  pins: X, Y
+
+DevC: Device C
+  pins: X, Y
+
+HdrL: Header L
+  right: A1, A2, A3, A4
+
+HdrR: Header R
+  left: B4, B3, B2, B1
+
+Hub.P1 -> DevA.X : A_X
+Hub.P4 -> DevA.Y : A_Y
+Hub.P2 -> DevB.X : B_X
+Hub.P5 -> DevB.Y : B_Y
+Hub.P3 -> DevC.X : C_X
+Hub.P6 -> DevC.Y : C_Y
+HdrL.A1 -> HdrR.B1 : L1
+HdrL.A2 -> HdrR.B2 : L2
+HdrL.A3 -> HdrR.B3 : L3
+HdrL.A4 -> HdrR.B4 : L4
+Hub.Q1 -> HdrL.A1 : L1
+Hub.Q4 -> HdrL.A4 : L4

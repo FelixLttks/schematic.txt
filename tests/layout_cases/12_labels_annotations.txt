@@ -1,0 +1,34 @@
+# 12 - Labels and annotations
+# Pin labels, component values and many named nets. Net names, pin labels
+# and values must stay readable and must not collide with wires or with
+# each other.
+
+MCU: ESP32-S3 DevKit
+  pins: 3V3, GND, GPIO1(ADC1_0), GPIO2(TOUCH2), GPIO38(LED_DATA), GPIO47(BTN), GPIO48(BUZZER)
+
+Strip: WS2812B LED Strip
+  pins: DIN, VDD, GND
+
+Rdata: resistor 330R
+  pins: 1, 2
+
+Cbulk: capacitor 1000uF
+  pins: 1, 2
+
+Pot: 10k Potentiometer
+  pins: CCW, WIPER, CW
+
+Btn: Tactile Switch
+  pins: 1, 2
+
+Buzzer: Piezo Buzzer
+  pins: +, -
+
+MCU.GPIO38 -> Rdata.1 : LED_DATA_RAW
+Rdata.2 -> Strip.DIN : LED_DATA
+MCU.3V3 -> Pot.CW : 3V3
+Pot.WIPER -> MCU.GPIO1 : POT_WIPER
+MCU.GPIO47 -> Btn.1 : BUTTON
+MCU.GPIO48 -> Buzzer.+ : BUZZER_DRV
+Strip.VDD -> Cbulk.1 : 5V_LED
+MCU.GND -> Strip.GND, Cbulk.2, Pot.CCW, Btn.2, Buzzer.- : GND

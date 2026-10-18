@@ -8,9 +8,10 @@ Ein modulares, textbasiertes CAD/Schaltplan-Werkzeug zur Beschreibung von elektr
 
 - **Textbasiertes Format (Git-tauglich)**: Reiner Text (DSL oder YAML). Einfach zu versionieren, per Diff nachvollziehbar und konfliktarm zu mergen.
 - **Verbindungen beschreiben, nicht zeichnen**: Einfache Schreibweise wie `ESP32.GND -> Sensor.GND, OLED.GND`. Pins und Komponenten werden bei Bedarf automatisch inferiert.
-- **Routenbewusstes 2D-Placement**: Mehrere topologische Startlayouts werden auf dem Raster verglichen und durch echte Neuroutings verbessert. Leitungslänge, Knicke, Kreuzungen, Bauteilabstände und benötigter Platz fließen gemeinsam in die Bewertung ein.
-- **Bauteile als Teil des Verbindungspfads**: Serienbauteile wie Sicherungen und Schalter werden aus der Netzstruktur erkannt und direkt in die Verbindung zum Ziel gesetzt, statt eine eigene Layoutspalte zu belegen.
-- **Echte 2D-Verdrahtung (kein WireViz 1D-Kabelbaum)**: Orthogonales Manhattan-Routing mit automatisch aus gemeinsamen Endpunkten abgeleiteten Parallelbündeln und Abzweig-Junction-Dots (`●`).
+- **Lesbarkeit vor Kompaktheit**: Das Layout wird für Menschen optimiert – wenige Kreuzungen und Knicke, zusammengehörige Leitungen (Busse, Differenzpaare, SPI/UART-Bündel) laufen parallel, Versorgungs-Rails außen, klare Gruppen. Verbindungstreue ist eine harte Bedingung und wird bei jedem Lauf geprüft.
+- **Konnektivitätsgetriebenes 2D-Placement**: Kein manuelles Positionieren nötig. Die Anordnung folgt der Topologie (Hubs, Ketten, Busse, Cluster); Pull-ups, Filter- und Abblockkondensatoren hängen konventionsgerecht an ihrem Pin. Mehrere Platzierungskandidaten werden tatsächlich geroutet und bewertet – der lesbarste gewinnt.
+- **Echte 2D-Verdrahtung (kein WireViz 1D-Kabelbaum)**: Orthogonales Manhattan-Routing mit Bus-Trunks, Steiner-Bäumen, Rip-up-and-Reroute, automatischen Junction-Dots (`●`) und Netznamen-Labels.
+- **Qualitätsbericht**: Jede Zeichnung wird vermessen (Kreuzungen, Knicke, Abstände, Bündel-Kohärenz, Verletzungen, Lesbarkeits-Score) – siehe `--report`.
 - **Minimalistisches PoC Web-Interface**: 50/50 Split-Screen (links Editor mit Zeilennummern, rechts 2D-SVG-Vorschau mit Pan & Zoom sowie Live-Fehleranzeige). Kein Header-Bloat, keine Farbverläufe, purer Fokus.
 - **Modulare Clean-Architecture**: Vollständige Trennung von Core-Logik (`schematic/`) und Web-App (`web/`).
 
@@ -28,12 +29,27 @@ python3 app.py
 ```bash
 # Schaltplan-Datei direkt nach SVG kompilieren:
 python3 app.py examples/esp32_sensors_bus.txt -o schaltplan.svg
+
+# Mit Qualitätsbericht, hellem Theme und gewählter Layout-Qualität:
+python3 app.py examples/example_large.txt -o large.svg --light --report --effort thorough
+python3 app.py examples/example_large.txt --json-report qualitaet.json
 ```
+
+`--effort` wählt zwischen `fast` (schnelle Vorschau), `balanced` (Standard) und `thorough`.
 
 ### 3. Tests ausführen
 ```bash
 python3 -m unittest discover tests
 ```
+
+### 4. Layout-Engine vergleichen
+```bash
+# Alle Beispiele und Layout-Testfälle mit einer früheren Engine-Version vergleichen:
+python3 tools/layout_report.py --baseline main --out build/layout-report
+```
+
+Wie die Layout-Engine funktioniert (Problemformulierung, Algorithmen, Gewichte, Tuning, Grenzen):
+[`docs/layout-engine.md`](docs/layout-engine.md). Vorher/Nachher-Vergleich: [`docs/comparison/index.md`](docs/comparison/index.md).
 
 ---
 
@@ -140,30 +156,36 @@ connections:
 schematic.txt/
 ├── app.py                      # Einstiegspunkt (Webserver & CLI)
 ├── schematic/                  # Core-Logik (Pure Python, unabhängig vom Webserver)
-│   ├── __init__.py             # Zentrale API: parse_schematic, generate_schematic_svg
-│   ├── models.py               # Datenmodelle (Component, Pin, Net, WireSegment, etc.)
+│   ├── __init__.py             # Zentrale API: parse_schematic, layout_schematic, generate_schematic_svg
+│   ├── models.py               # Datenmodelle (Component, Pin, Net, WireSegment, NetLabel, ...)
 │   ├── parser.py               # Parser für DSL & YAML mit präzisen Zeilen-Fehlermeldungen
+│   ├── serialize.py            # Geometrie <-> JSON (Vergleich verschiedener Engine-Versionen)
+│   ├── styles.py               # Netzfarben nach semantischer Klasse
 │   ├── layout/
-│   │   ├── __init__.py
-│   │   ├── pin_allocator.py    # Pin-Zuweisung & Bauteil-Dimensionierung
-│   │   ├── placer.py           # 2D-Placement (Topologie, Kanal-Abstände, Kraftmodell)
-│   │   └── router.py           # Orthogonales Manhattan-Routing & Bus-Junctions
+│   │   ├── engine.py           # Ablauf: normalisieren, analysieren, Kandidaten platzieren/routen, auswählen
+│   │   ├── config.py           # Alle Gewichte & Parameter, Effort-Stufen
+│   │   ├── normalize.py        # Netze, die einen Pin teilen, zusammenführen
+│   │   ├── semantics.py        # Masse/Versorgung/Signal, Rails, Busse, Differenzpaare, Bauteil-Rollen
+│   │   ├── placer.py           # Placement-Kern (Satelliten, Pin-Konfiguration, Legalisierung)
+│   │   ├── seeds.py            # Startplatzierungen: geschichtete Spalten / Stress-Majorisierung
+│   │   ├── search.py           # Lokale Suche auf dem geschätzten Routing-Ziel
+│   │   ├── estimate.py         # Schnelle Routing-Schätzung für das Placement
+│   │   ├── pin_allocator.py    # Bauteilgröße & Pin-Koordinaten
+│   │   ├── router.py           # Orthogonaler Grid-Router (A*, Steiner-Bäume, Rip-up & Reroute)
+│   │   ├── labels.py           # Platzierung der Netznamen
+│   │   └── metrics.py          # Qualitätsmetriken & Lesbarkeits-Score
 │   └── renderer/
-│       ├── __init__.py
-│       └── svg.py              # SVG-Generierung (Vektorgrafik, IC-Symbole, Leitungen)
+│       └── svg.py              # SVG-Generierung (IC-Boxen, Symbole, Leitungen, Labels)
 ├── web/                        # Web-Oberfläche (Minimalistischer PoC)
-│   ├── __init__.py
 │   ├── server.py               # Python Built-in HTTP Server (Zero Dependencies)
-│   └── static/
-│       ├── index.html          # 50/50 Split-Screen (Editor / Preview)
-│       ├── style.css           # Minimalistisches Styling ohne Header/Gradients
-│       └── app.js              # Live-Debounce-Compiler, Pan & Zoom, Error-Handling
+│   └── static/                 # index.html, style.css, app.js
+├── tools/
+│   └── layout_report.py        # Vorher/Nachher-Bericht mit Metriken und Bildern
+├── docs/
+│   ├── layout-engine.md        # Architektur, Algorithmen, Gewichte, Tuning, Grenzen
+│   └── comparison/             # Vorher/Nachher-Zeichnungen und Metriken
 ├── examples/                   # Beispiel-Schaltpläne
-│   ├── esp32_sensors_bus.txt
-│   ├── esp32_sd_spi.txt
-│   └── simple_quickstart.txt
-└── tests/                      # Unit-Tests
-    ├── test_parser.py
-    ├── test_layout.py
-    └── test_renderer.py
+└── tests/                      # Unit-, Qualitäts- und Determinismus-Tests
+    ├── layout_cases/           # 13 Layout-Testfälle (Kette, Bus, Differenzpaar, Cluster, ...)
+    └── layout_quality_baseline.json
 ```

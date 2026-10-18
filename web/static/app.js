@@ -13,6 +13,7 @@
   const btnDownload = document.getElementById("btn-download");
   const btnTheme = document.getElementById("btn-theme");
   const exampleSelect = document.getElementById("example-select");
+  const effortSelect = document.getElementById("effort-select");
   const canvasWrapper = document.getElementById("canvas-wrapper");
   const dragDivider = document.getElementById("drag-divider");
   const editorPane = document.querySelector(".editor-pane");
@@ -62,7 +63,7 @@
       const resp = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: codeInput.value, dark_theme: darkTheme })
+        body: JSON.stringify({ code: codeInput.value, dark_theme: darkTheme, effort: effortSelect.value })
       });
 
       const data = await resp.json();
@@ -294,6 +295,8 @@
   });
 
   // 5. Theme Toggle
+  effortSelect.addEventListener("change", () => compileSchematic());
+
   btnTheme.addEventListener("click", () => {
     darkTheme = !darkTheme;
     document.body.classList.toggle("light-theme", !darkTheme);

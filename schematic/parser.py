@@ -401,6 +401,7 @@ class SchematicParser:
             raise ParseError("No valid target pin found after arrow", line_num, line_content)
 
         # Auto-name net if not given
+        auto_named = False
         if not net_name:
             # Common sensible net names like GND, 3V3, 5V, VCC, SDA, SCL
             common_signals = {"gnd", "3v3", "5v", "vcc", "vin", "sda", "scl", "miso", "mosi", "sck", "cs", "rst", "tx", "rx"}
@@ -411,11 +412,12 @@ class SchematicParser:
                 net_name = src_label.upper()
             else:
                 net_name = f"{src_comp}_{src_pin}"
+                auto_named = True
 
         # Group or merge into Net
         existing_net = next((n for n in self.schematic.nets if n.name == net_name), None)
         if existing_net is None:
-            existing_net = Net(name=net_name)
+            existing_net = Net(name=net_name, auto_named=auto_named)
             self.schematic.nets.append(existing_net)
 
         target_comp_ids = [t[0] for t in targets]
@@ -439,12 +441,13 @@ class SchematicParser:
         if not parsed_pins:
             return
 
+        auto_named = not net_name
         if not net_name:
             net_name = f"{parsed_pins[0][0]}_{parsed_pins[0][1]}"
 
         net = next((n for n in self.schematic.nets if n.name == net_name), None)
         if net is None:
-            net = Net(name=net_name)
+            net = Net(name=net_name, auto_named=auto_named)
             self.schematic.nets.append(net)
 
         for c_name, p_name in parsed_pins:

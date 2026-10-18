@@ -1,0 +1,104 @@
+{
+  "01_linear_chain": {
+    "readability_score": 100.0,
+    "crossings": 0,
+    "bends": 0,
+    "fingerprint": "46323a995d05895e"
+  },
+  "02_branching": {
+    "readability_score": 72.55,
+    "crossings": 2,
+    "bends": 3,
+    "fingerprint": "47b88c76753717d5"
+  },
+  "03_dense_network": {
+    "readability_score": 54.7,
+    "crossings": 6,
+    "bends": 22,
+    "fingerprint": "21b4f3d87ebf01c6"
+  },
+  "04_parallel_bundle": {
+    "readability_score": 100.0,
+    "crossings": 0,
+    "bends": 0,
+    "fingerprint": "30e8a7f0b528b49a"
+  },
+  "05_i2c_bus": {
+    "readability_score": 58.96,
+    "crossings": 10,
+    "bends": 10,
+    "fingerprint": "f48ee143554756f8"
+  },
+  "06_differential_pairs": {
+    "readability_score": 71.99,
+    "crossings": 1,
+    "bends": 8,
+    "fingerprint": "745d8508929f039c"
+  },
+  "07_crossing_prone": {
+    "readability_score": 37.81,
+    "crossings": 6,
+    "bends": 18,
+    "fingerprint": "5c165e771da75a28"
+  },
+  "08_clusters": {
+    "readability_score": 91.64,
+    "crossings": 0,
+    "bends": 4,
+    "fingerprint": "66ad60e461c0c14e"
+  },
+  "09_isolated": {
+    "readability_score": 72.28,
+    "crossings": 0,
+    "bends": 4,
+    "fingerprint": "2d038272d7038095"
+  },
+  "10_long_distance": {
+    "readability_score": 57.4,
+    "crossings": 3,
+    "bends": 15,
+    "fingerprint": "375d1aa6c1677167"
+  },
+  "11_length_vs_readability": {
+    "readability_score": 63.43,
+    "crossings": 0,
+    "bends": 8,
+    "fingerprint": "f783c54eb595e104"
+  },
+  "12_labels_annotations": {
+    "readability_score": 66.88,
+    "crossings": 1,
+    "bends": 11,
+    "fingerprint": "6c52260a064ce0d2"
+  },
+  "13_functional_regions": {
+    "readability_score": 54.21,
+    "crossings": 9,
+    "bends": 22,
+    "fingerprint": "08714a9d0ad72934"
+  },
+  "esp32_sd_spi": {
+    "readability_score": 67.16,
+    "crossings": 0,
+    "bends": 12,
+    "fingerprint": "12a74e4714789298"
+  },
+  "esp32_sensors_bus": {
+    "readability_score": 52.51,
+    "crossings": 6,
+    "bends": 10,
+    "fingerprint": "f532d9b554a78eda"
+  },
+  "example_large": {
+    "readability_score": 45.43,
+    "crossings": 30,
+    "bends": 45,
+    "fingerprint": "314394a0493bdde9"
+  },
+  "simple_quickstart": {
+    "readability_score": 51.77,
+    "crossings": 2,
+    "bends": 10,
+    "fingerprint": "fd659d07d38c4b23"
+  }
+}

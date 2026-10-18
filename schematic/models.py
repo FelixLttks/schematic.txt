@@ -224,7 +224,9 @@ class Component:
                 return
 
         # 3. Matches "Value Kind" e.g. "2kOhm Resistor", "100nF Capacitor", "Inline Fuse", "Slide Switch (SPDT)"
-        m = re.match(r"^(.*?)\s+([A-Za-z]+)(?:\s*\((.*?)\))?$", t)
+        #    Single-letter synonyms (r, c, l, d) are not accepted here: "Device C" or
+        #    "Header L" are names, not a capacitor or an inductor.
+        m = re.match(r"^(.*?)\s+([A-Za-z]{2,})(?:\s*\((.*?)\))?$", t)
         if m:
             k = normalize_kind(m.group(2))
             if k:
@@ -316,6 +318,7 @@ class Net:
     connections: List[NetConnection] = field(default_factory=list)
     color: Optional[str] = None
     is_bus: bool = False
+    auto_named: bool = False  # True when the parser generated the name ("Comp_Pin")
 
     def add_connection(
         self,
@@ -365,6 +368,17 @@ class WireJunction:
 
 
 @dataclass
+class NetLabel:
+    """A net-name annotation placed on a horizontal wire segment."""
+
+    text: str
+    x: float              # text anchor (start) position
+    y: float              # text baseline
+    width: float          # estimated rendered width
+    net_name: str = ""
+
+
+@dataclass
 class Schematic:
     components: Dict[str, Component] = field(default_factory=dict)
     nets: List[Net] = field(default_factory=list)
@@ -372,6 +386,7 @@ class Schematic:
     junctions: List[WireJunction] = field(default_factory=list)
     width: float = 1200.0
     height: float = 800.0
+    labels: List[NetLabel] = field(default_factory=list)
 
     def get_or_create_component(self, comp_id: str, type_name: str = "") -> Component:
         if comp_id not in self.components:

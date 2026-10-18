@@ -288,15 +288,18 @@ class TestLayoutAndRouting(unittest.TestCase):
         """
         sch = process_schematic(text)
 
-        # Check standard sizing (60x40 for resistor/switch/fuse, 40x40 for capacitor)
-        self.assertEqual(sch.components["PullUp"].width, 60.0)
-        self.assertEqual(sch.components["PullUp"].height, 40.0)
-        self.assertEqual(sch.components["FilterCap"].width, 40.0)
-        self.assertEqual(sch.components["FilterCap"].height, 40.0)
-        self.assertEqual(sch.components["PowerSwitch"].width, 60.0)
-        self.assertEqual(sch.components["PowerSwitch"].height, 40.0)
-        self.assertEqual(sch.components["Fuse"].width, 60.0)
-        self.assertEqual(sch.components["Fuse"].height, 40.0)
+        # Check standard sizing (60x40 for resistor/switch/fuse, 40x40 for capacitor).
+        # Two-pin parts may be oriented vertically (a pull-up hangs off its
+        # signal with the supply on top), so the size is checked independently
+        # of orientation.
+        def dims(cid):
+            c = sch.components[cid]
+            return sorted((c.width, c.height))
+
+        self.assertEqual(dims("PullUp"), [40.0, 60.0])
+        self.assertEqual(dims("FilterCap"), [40.0, 40.0])
+        self.assertEqual(dims("PowerSwitch"), [40.0, 60.0])
+        self.assertEqual(dims("Fuse"), [40.0, 60.0])
 
         # Check wires connect properly
         self.assertGreater(len(sch.wires), 0)

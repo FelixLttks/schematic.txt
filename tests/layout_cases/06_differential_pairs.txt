@@ -1,0 +1,27 @@
+# 06 - Differential pairs
+# USB D+/D- and a CAN bus with a termination resistor. Each pair must stay
+# together as two adjacent parallel wires from end to end; the terminator
+# bridges the pair.
+
+MCU: STM32G474
+  pins: USB_DP, USB_DM, CAN_TX, CAN_RX, 3V3, GND
+
+USB: USB-C Receptacle
+  pins: VBUS, D+, D-, CC1, CC2, GND
+
+Transceiver: TJA1051 CAN Transceiver
+  pins: TXD, RXD, CANH, CANL, VCC, GND
+
+CANConn: CAN Terminal Block
+  pins: CANH, CANL, GND
+
+Term: resistor 120R
+  pins: 1, 2
+
+MCU.USB_DP -> USB.D+ : USB_D_P
+MCU.USB_DM -> USB.D- : USB_D_N
+MCU.CAN_TX -> Transceiver.TXD : CAN_TX
+Transceiver.RXD -> MCU.CAN_RX : CAN_RX
+Transceiver.CANH -> CANConn.CANH, Term.1 : CAN_H
+Transceiver.CANL -> CANConn.CANL, Term.2 : CAN_L
+MCU.GND -> USB.GND, Transceiver.GND, CANConn.GND : GND
