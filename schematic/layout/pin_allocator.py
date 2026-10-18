@@ -76,6 +76,8 @@ def is_vertical_symbol(comp: Component) -> bool:
 
 def apply_order(comp: Component, key: Callable[[Pin], float]) -> None:
     """Re-numbers ``pin.order`` per side; declared orders are kept as they are."""
+    if comp.image:
+        return
     for side in SIDES:
         pins = [p for p in comp.pins.values() if p.side == side]
         declared = [p for p in pins if p.side_specified]
@@ -89,6 +91,10 @@ def apply_order(comp: Component, key: Callable[[Pin], float]) -> None:
 def size_and_place_pins(comp: Component) -> None:
     """Computes the component size and every pin's coordinates from the pins'
     sides and orders, relative to the current ``comp.x`` / ``comp.y``."""
+    if comp.image:
+        _place_custom_pins(comp)
+        return
+
     left, right = pins_on(comp, Side.LEFT), pins_on(comp, Side.RIGHT)
     top, bottom = pins_on(comp, Side.TOP), pins_on(comp, Side.BOTTOM)
 
@@ -142,6 +148,49 @@ def size_and_place_pins(comp: Component) -> None:
         px = start_x + i * PIN_PITCH
         pin.lead_start = Point(px, snap(comp.y + comp.height))
         pin.position = Point(px, pin.lead_start.y + PIN_LEAD_LEN)
+
+
+def _place_custom_pins(comp: Component) -> None:
+    gw = comp.grid_width if comp.grid_width > 0 else 6
+    gh = comp.grid_height if comp.grid_height > 0 else 6
+    comp.width = float(snap(gw * GRID_SIZE))
+    comp.height = float(snap(gh * GRID_SIZE))
+
+    for pin in comp.pins.values():
+        if pin.grid_x is not None and pin.grid_y is not None:
+            gx, gy = pin.grid_x, pin.grid_y
+            px = snap(comp.x + gx * GRID_SIZE)
+            py = snap(comp.y + gy * GRID_SIZE)
+            pin.lead_start = Point(px, py)
+
+            if not pin.side_specified:
+                dist_left = gx
+                dist_right = gw - gx
+                dist_top = gy
+                dist_bottom = gh - gy
+                min_d = min(dist_left, dist_right, dist_top, dist_bottom)
+                if min_d == dist_left:
+                    pin.side = Side.LEFT
+                elif min_d == dist_right:
+                    pin.side = Side.RIGHT
+                elif min_d == dist_top:
+                    pin.side = Side.TOP
+                else:
+                    pin.side = Side.BOTTOM
+
+            if pin.side == Side.LEFT:
+                pin.position = Point(snap(comp.x - PIN_LEAD_LEN), py)
+            elif pin.side == Side.RIGHT:
+                pin.position = Point(snap(comp.x + comp.width + PIN_LEAD_LEN), py)
+            elif pin.side == Side.TOP:
+                pin.position = Point(px, snap(comp.y - PIN_LEAD_LEN))
+            else:
+                pin.position = Point(px, snap(comp.y + comp.height + PIN_LEAD_LEN))
+        else:
+            # Fallback for pins without explicit coordinates
+            pin.lead_start = Point(snap(comp.x), snap(comp.y + 20.0))
+            pin.position = Point(snap(comp.x - PIN_LEAD_LEN), snap(comp.y + 20.0))
+            pin.side = Side.LEFT
 
 
 def _place_standard_pins(

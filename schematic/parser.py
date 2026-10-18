@@ -5,7 +5,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 import yaml
 
-from schematic.models import Component, Net, NetConnection, Pin, Schematic, Side, normalize_kind
+from schematic.models import Component, Net, NetConnection, PartTemplate, Pin, Schematic, Side, normalize_kind
 
 
 class ParseError(Exception):
@@ -88,6 +88,13 @@ class SchematicParser:
 
         # Otherwise parse as line-oriented Schematic DSL
         self._parse_dsl(text)
+
+        # Resolve custom part templates for components
+        for comp in self.schematic.components.values():
+            part = self.schematic.parts.get(comp.type_name) or self.schematic.parts.get(comp.id)
+            if part and not comp.image:
+                self._apply_part_template(comp, part)
+
         return self.schematic
 
     def _is_structured_yaml(self, text: str) -> bool:
@@ -206,14 +213,100 @@ class SchematicParser:
                     if isinstance(connect_list, list):
                         self._add_net_by_pin_strings(connect_list, net_name=name, line_num=idx)
 
+    def _apply_part_template(self, comp: Component, part: PartTemplate) -> None:
+        if not comp.image:
+            comp.image = part.image
+        if not comp.grid_width:
+            comp.grid_width = part.grid_width
+        if not comp.grid_height:
+            comp.grid_height = part.grid_height
+        if comp.image_rect is None and part.image_rect is not None:
+            comp.image_rect = part.image_rect
+        for p_name, (gx, gy, side_enum) in part.pins.items():
+            lbl_m = re.match(r"^([^\(\)]+)(?:\((.*)\))?$", p_name)
+            if lbl_m and lbl_m.group(2):
+                base_name = lbl_m.group(1).strip()
+                base_label = lbl_m.group(2).strip()
+            else:
+                base_name = p_name
+                base_label = ""
+
+            p = comp.get_pin(base_name) or comp.get_pin(p_name)
+            if p is None:
+                comp.add_pin(
+                    base_name,
+                    label=base_label,
+                    grid_x=gx,
+                    grid_y=gy,
+                    side=side_enum or Side.LEFT,
+                    side_specified=bool(side_enum),
+                )
+            else:
+                p.grid_x = gx
+                p.grid_y = gy
+                if base_label and not p.label:
+                    p.label = base_label
+                if side_enum:
+                    p.side = side_enum
+                    p.side_specified = True
+
     def _parse_dsl(self, text: str) -> None:
         lines = text.splitlines()
         current_comp: Optional[Component] = None
+        current_part: Optional[PartTemplate] = None
 
         for line_idx, raw_line in enumerate(lines, start=1):
             line = raw_line.strip()
             # Ignore empty lines and comments
             if not line or line.startswith("#") or line.startswith("//"):
+                continue
+
+            # Check for part definition header: "part ESP32:"
+            part_match = re.match(r"^part\s+([A-Za-z0-9_\-]+)\s*:$", line, re.IGNORECASE)
+            if part_match:
+                part_name = part_match.group(1).strip()
+                current_part = self.schematic.get_or_create_part(part_name)
+                current_comp = None
+                continue
+
+            # Check for image declaration: "image: parts/esp32.svg"
+            image_match = re.match(r"^image\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if image_match:
+                img_val = image_match.group(1).strip().strip('"\'')
+                if current_part is not None:
+                    current_part.image = img_val
+                elif current_comp is not None:
+                    current_comp.image = img_val
+                else:
+                    raise ParseError(f"'{line}' defined without a preceding component or part declaration", line_idx, raw_line)
+                continue
+
+            # Check for image_rect declaration: "image_rect: -10, -5, 200, 370"
+            image_rect_match = re.match(r"^(?:image_rect|img_rect)\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if image_rect_match:
+                r_val = image_rect_match.group(1).strip()
+                r_parts = [float(p.strip()) for p in re.split(r"[, \s]+", r_val) if p.strip()]
+                if len(r_parts) >= 4:
+                    rect_val = (r_parts[0], r_parts[1], r_parts[2], r_parts[3])
+                    if current_part is not None:
+                        current_part.image_rect = rect_val
+                    elif current_comp is not None:
+                        current_comp.image_rect = rect_val
+                continue
+
+            # Check for size declaration: "size: 9x18" or "size: 9, 18"
+            size_match = re.match(r"^size\s*[:=]\s*(.+)$", line, re.IGNORECASE)
+            if size_match:
+                s_val = size_match.group(1).strip()
+                parts = re.split(r"[xX,\s]+", s_val)
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                    gw, gh = int(parts[0]), int(parts[1])
+                    if current_part is not None:
+                        current_part.grid_width = gw
+                        current_part.grid_height = gh
+                    elif current_comp is not None:
+                        current_comp.grid_width = gw
+                        current_comp.grid_height = gh
                 continue
 
             # Check for explicit pin side declarations:
@@ -242,8 +335,8 @@ class SchematicParser:
 
             # Check if line is empty "pins:" header (to be followed by indented left:, right:, etc.)
             if re.match(r"^pins\s*[:=]\s*$", line, re.IGNORECASE):
-                if current_comp is None:
-                    raise ParseError("'pins:' defined without a preceding component declaration", line_idx, raw_line)
+                if current_comp is None and current_part is None:
+                    raise ParseError("'pins:' defined without a preceding component or part declaration", line_idx, raw_line)
                 continue
 
             # Generic pins line: pins: 3V3, GND, GPIO21(SDA)
@@ -280,6 +373,33 @@ class SchematicParser:
                 current_comp.value = val_match.group(1).strip()
                 continue
 
+            # Check for pin coordinate declaration: "3V3: 0, 2" or "GPIO21(SDA): 8, 5, right"
+            coord_pin_match = re.match(r"^([^:\s][^:]*?)\s*:\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([a-zA-Z]+))?$", line)
+            if coord_pin_match:
+                p_raw = coord_pin_match.group(1).strip()
+                if p_raw.lower() not in ("pins", "image", "image_rect", "img_rect", "size", "kind", "symbol", "standard", "value", "val", "net", "left", "right", "top", "bottom"):
+                    gx = int(coord_pin_match.group(2))
+                    gy = int(coord_pin_match.group(3))
+                    side_str = coord_pin_match.group(4).lower() if coord_pin_match.group(4) else None
+                    side_enum = {"left": Side.LEFT, "right": Side.RIGHT, "top": Side.TOP, "bottom": Side.BOTTOM}.get(side_str) if side_str else None
+
+                    lbl_m = re.match(r"^([^\(\)]+)(?:\((.*)\))?$", p_raw)
+                    if lbl_m and lbl_m.group(2):
+                        p_name = lbl_m.group(1).strip()
+                        p_label = lbl_m.group(2).strip()
+                    else:
+                        p_name = p_raw
+                        p_label = ""
+
+                    if current_part is not None:
+                        current_part.pins[p_raw] = (gx, gy, side_enum)
+                        continue
+                    elif current_comp is not None:
+                        current_comp.add_pin(p_name, label=p_label, grid_x=gx, grid_y=gy, side=side_enum or Side.LEFT, side_specified=bool(side_enum))
+                        continue
+                    else:
+                        raise ParseError(f"'{line}' defined without a preceding component or part declaration", line_idx, raw_line)
+
             # Check for "net <name>: Comp1.Pin1, Comp2.Pin2..."
             net_match = re.match(r"^net\s+([\w\-\.]+)\s*:\s*(.+)$", line, re.IGNORECASE)
             if net_match:
@@ -304,7 +424,10 @@ class SchematicParser:
                 comp_id = comp_match.group(1).strip()
                 bracket_attrs = comp_match.group(2)
                 type_name = (comp_match.group(3) or "").strip().rstrip("]")
+                current_part = None
                 current_comp = self.schematic.get_or_create_component(comp_id, type_name)
+                if type_name and type_name in self.schematic.parts:
+                    self._apply_part_template(current_comp, self.schematic.parts[type_name])
                 if bracket_attrs:
                     self._parse_inline_comp_attrs(current_comp, bracket_attrs)
                 if "[" in type_name and type_name.endswith("]"):

@@ -103,6 +103,8 @@ class Pin:
     id: str = ""
     lead_start: Point = field(default_factory=lambda: Point(0.0, 0.0))
     position: Point = field(default_factory=lambda: Point(0.0, 0.0))
+    grid_x: Optional[int] = None
+    grid_y: Optional[int] = None
 
     def __post_init__(self):
         if not self.id:
@@ -158,6 +160,10 @@ class Component:
     height: float = 80.0
     kind: str = ""
     value: str = ""
+    image: str = ""
+    image_rect: Optional[Tuple[float, float, float, float]] = None
+    grid_width: int = 0
+    grid_height: int = 0
 
     def __post_init__(self):
         if not self.kind and self.type_name:
@@ -261,6 +267,8 @@ class Component:
         order: int = 0,
         side_specified: bool = False,
         pin_id: Optional[str] = None,
+        grid_x: Optional[int] = None,
+        grid_y: Optional[int] = None,
     ) -> Pin:
         if not pin_id:
             existing_same_name = [p for p in self.pins.values() if p.name.upper() == name.upper()]
@@ -276,6 +284,8 @@ class Component:
             order=order,
             side_specified=side_specified,
             id=pin_id,
+            grid_x=grid_x,
+            grid_y=grid_y,
         )
         self.pins[pin_id] = pin
         return pin
@@ -290,8 +300,17 @@ class Component:
 
     def get_pins_by_name(self, name: str) -> List[Pin]:
         name_u = name.upper()
-        # Direct match on name or id e.g. "GND" or "GND#2"
-        return [p for p in self.pins.values() if p.name.upper() == name_u or p.id.upper() == name_u]
+        # Match on name, id, label (e.g. SDA) or full name(label) (e.g. GPIO21(SDA))
+        results = []
+        for p in self.pins.values():
+            if (
+                p.name.upper() == name_u
+                or p.id.upper() == name_u
+                or (p.label and p.label.upper() == name_u)
+                or (p.label and f"{p.name}({p.label})".upper() == name_u)
+            ):
+                results.append(p)
+        return results
 
     def get_pin(self, name_or_id: str) -> Optional[Pin]:
         if name_or_id in self.pins:
@@ -379,14 +398,30 @@ class NetLabel:
 
 
 @dataclass
+class PartTemplate:
+    name: str
+    image: str = ""
+    image_rect: Optional[Tuple[float, float, float, float]] = None
+    grid_width: int = 0
+    grid_height: int = 0
+    pins: Dict[str, Tuple[int, int, Optional[Side]]] = field(default_factory=dict)
+
+
+@dataclass
 class Schematic:
     components: Dict[str, Component] = field(default_factory=dict)
+    parts: Dict[str, PartTemplate] = field(default_factory=dict)
     nets: List[Net] = field(default_factory=list)
     wires: List[WireSegment] = field(default_factory=list)
     junctions: List[WireJunction] = field(default_factory=list)
     width: float = 1200.0
     height: float = 800.0
     labels: List[NetLabel] = field(default_factory=list)
+
+    def get_or_create_part(self, name: str) -> PartTemplate:
+        if name not in self.parts:
+            self.parts[name] = PartTemplate(name=name)
+        return self.parts[name]
 
     def get_or_create_component(self, comp_id: str, type_name: str = "") -> Component:
         if comp_id not in self.components:

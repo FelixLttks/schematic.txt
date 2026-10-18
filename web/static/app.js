@@ -369,7 +369,684 @@
     }
   }
 
+  // ================================================================= 8. Part Builder Modal
+  const btnPartBuilder = document.getElementById("btn-part-builder");
+  const partModal = document.getElementById("part-modal");
+  const btnCloseModal = document.getElementById("btn-close-modal");
+  const partNameInput = document.getElementById("part-name-input");
+  const partFileInput = document.getElementById("part-file-input");
+  const partWidthInput = document.getElementById("part-width-input");
+  const partHeightInput = document.getElementById("part-height-input");
+  const imgPosXInput = document.getElementById("img-pos-x");
+  const imgPosYInput = document.getElementById("img-pos-y");
+  const imgWidthInput = document.getElementById("img-width");
+  const imgHeightInput = document.getElementById("img-height");
+  const btnFitGrid = document.getElementById("btn-fit-grid");
+  const btnCenterImage = document.getElementById("btn-center-image");
+  const pinsList = document.getElementById("pins-list");
+  const pinCount = document.getElementById("pin-count");
+  const btnInsertPart = document.getElementById("btn-insert-part");
+  const partGridSvg = document.getElementById("part-grid-svg");
+  const canvasCursorPos = document.getElementById("canvas-cursor-pos");
+
+  const partState = {
+    name: "ESP32",
+    width: 9,
+    height: 18,
+    imgX: 0,
+    imgY: 0,
+    imgW: 180,
+    imgH: 360,
+    imagePath: "parts/esp32_devkit.svg",
+    imageDataUrl: "",
+    pins: [
+      { name: "3V3", x: 0, y: 2 },
+      { name: "EN", x: 0, y: 3 },
+      { name: "GND", x: 0, y: 16 },
+      { name: "VIN", x: 8, y: 2 },
+      { name: "D21", x: 8, y: 12 },
+      { name: "D22", x: 8, y: 15 }
+    ]
+  };
+
+  const partCanvasWrapper = document.getElementById("part-canvas-wrapper");
+  const btnPartZoomIn = document.getElementById("btn-part-zoom-in");
+  const btnPartZoomOut = document.getElementById("btn-part-zoom-out");
+  const btnPartZoomReset = document.getElementById("btn-part-zoom-reset");
+  const partZoomVal = document.getElementById("part-zoom-val");
+
+  let partCanvasZoom = 2.0; // 200% default scale for huge, clear working area
+
+  function setPartZoom(val) {
+    partCanvasZoom = Math.max(0.75, Math.min(4.0, val));
+    if (partZoomVal) {
+      partZoomVal.textContent = Math.round(partCanvasZoom * 100) + "%";
+    }
+    renderPartCanvas();
+  }
+
+  if (btnPartZoomIn) btnPartZoomIn.addEventListener("click", () => setPartZoom(partCanvasZoom + 0.25));
+  if (btnPartZoomOut) btnPartZoomOut.addEventListener("click", () => setPartZoom(partCanvasZoom - 0.25));
+  if (btnPartZoomReset) btnPartZoomReset.addEventListener("click", () => setPartZoom(2.0));
+
+  if (partCanvasWrapper) {
+    partCanvasWrapper.addEventListener("wheel", (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.2 : -0.2;
+        setPartZoom(partCanvasZoom + delta);
+      }
+    }, { passive: false });
+  }
+
+  // Dragging & Scaling State for Image Transform Rectangle
+  let isTransforming = false;
+  let isPotentialMove = false;
+  let transformMode = null; // 'move' or 'nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'
+  let startPointerX = 0;
+  let startPointerY = 0;
+  let initialImgX = 0;
+  let initialImgY = 0;
+  let initialImgW = 0;
+  let initialImgH = 0;
+
+  function syncImageInputs() {
+    if (imgPosXInput) imgPosXInput.value = Math.round(partState.imgX);
+    if (imgPosYInput) imgPosYInput.value = Math.round(partState.imgY);
+    if (imgWidthInput) imgWidthInput.value = Math.round(partState.imgW);
+    if (imgHeightInput) imgHeightInput.value = Math.round(partState.imgH);
+  }
+
+  if (btnPartBuilder && partModal) {
+    btnPartBuilder.addEventListener("click", () => {
+      partModal.classList.remove("hidden");
+      renderPartBuilder();
+    });
+
+    btnCloseModal.addEventListener("click", () => {
+      partModal.classList.add("hidden");
+    });
+
+    partModal.addEventListener("click", (e) => {
+      if (e.target === partModal) {
+        partModal.classList.add("hidden");
+      }
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !partModal.classList.contains("hidden")) {
+        partModal.classList.add("hidden");
+      }
+    });
+
+    partNameInput.addEventListener("input", () => {
+      partState.name = partNameInput.value.trim() || "Part";
+    });
+
+    partWidthInput.addEventListener("change", () => {
+      const val = parseInt(partWidthInput.value, 10);
+      if (val >= 2) {
+        partState.width = val;
+        renderPartCanvas();
+      }
+    });
+
+    partHeightInput.addEventListener("change", () => {
+      const val = parseInt(partHeightInput.value, 10);
+      if (val >= 2) {
+        partState.height = val;
+        renderPartCanvas();
+      }
+    });
+
+    // Image Bounds Direct Inputs
+    if (imgPosXInput) {
+      imgPosXInput.addEventListener("change", () => {
+        partState.imgX = parseFloat(imgPosXInput.value) || 0;
+        renderPartCanvas();
+      });
+    }
+    if (imgPosYInput) {
+      imgPosYInput.addEventListener("change", () => {
+        partState.imgY = parseFloat(imgPosYInput.value) || 0;
+        renderPartCanvas();
+      });
+    }
+    if (imgWidthInput) {
+      imgWidthInput.addEventListener("change", () => {
+        partState.imgW = Math.max(10, parseFloat(imgWidthInput.value) || 20);
+        renderPartCanvas();
+      });
+    }
+    if (imgHeightInput) {
+      imgHeightInput.addEventListener("change", () => {
+        partState.imgH = Math.max(10, parseFloat(imgHeightInput.value) || 20);
+        renderPartCanvas();
+      });
+    }
+
+    if (btnFitGrid) {
+      btnFitGrid.addEventListener("click", () => {
+        partState.imgX = 0;
+        partState.imgY = 0;
+        partState.imgW = partState.width * 20;
+        partState.imgH = partState.height * 20;
+        syncImageInputs();
+        renderPartCanvas();
+      });
+    }
+
+    if (btnCenterImage) {
+      btnCenterImage.addEventListener("click", () => {
+        const gridW = partState.width * 20;
+        const gridH = partState.height * 20;
+        partState.imgX = Math.round((gridW - partState.imgW) / 2);
+        partState.imgY = Math.round((gridH - partState.imgH) / 2);
+        syncImageInputs();
+        renderPartCanvas();
+      });
+    }
+
+    // Global Mouse Handlers for Dragging and Scaling
+    window.addEventListener("mousemove", (e) => {
+      if (isPotentialMove && !isTransforming) {
+        const moveDist = Math.hypot(e.clientX - startPointerX, e.clientY - startPointerY);
+        if (moveDist > 4) {
+          isTransforming = true;
+          document.body.style.cursor = "move";
+          renderPartCanvas();
+        }
+      }
+
+      if (!isTransforming) return;
+
+      const W = partState.width * 20;
+      const H = partState.height * 20;
+      const pad = 120;
+      const totalW = W + pad * 2;
+      const totalH = H + pad * 2;
+
+      const svgRect = partGridSvg.getBoundingClientRect();
+      if (!svgRect.width || !svgRect.height) return;
+
+      const scaleX = totalW / svgRect.width;
+      const scaleY = totalH / svgRect.height;
+      const dx = (e.clientX - startPointerX) * scaleX;
+      const dy = (e.clientY - startPointerY) * scaleY;
+
+      if (transformMode === "move") {
+        partState.imgX = Math.round(initialImgX + dx);
+        partState.imgY = Math.round(initialImgY + dy);
+      } else if (transformMode === "e") {
+        // Independent X scale right
+        partState.imgW = Math.max(20, Math.round(initialImgW + dx));
+      } else if (transformMode === "w") {
+        // Independent X scale left
+        const newW = Math.max(20, Math.round(initialImgW - dx));
+        partState.imgX = Math.round(initialImgX + (initialImgW - newW));
+        partState.imgW = newW;
+      } else if (transformMode === "s") {
+        // Independent Y scale bottom
+        partState.imgH = Math.max(20, Math.round(initialImgH + dy));
+      } else if (transformMode === "n") {
+        // Independent Y scale top
+        const newH = Math.max(20, Math.round(initialImgH - dy));
+        partState.imgY = Math.round(initialImgY + (initialImgH - newH));
+        partState.imgH = newH;
+      } else if (transformMode === "se") {
+        partState.imgW = Math.max(20, Math.round(initialImgW + dx));
+        partState.imgH = Math.max(20, Math.round(initialImgH + dy));
+      } else if (transformMode === "sw") {
+        const newW = Math.max(20, Math.round(initialImgW - dx));
+        partState.imgX = Math.round(initialImgX + (initialImgW - newW));
+        partState.imgW = newW;
+        partState.imgH = Math.max(20, Math.round(initialImgH + dy));
+      } else if (transformMode === "ne") {
+        partState.imgW = Math.max(20, Math.round(initialImgW + dx));
+        const newH = Math.max(20, Math.round(initialImgH - dy));
+        partState.imgY = Math.round(initialImgY + (initialImgH - newH));
+        partState.imgH = newH;
+      } else if (transformMode === "nw") {
+        const newW = Math.max(20, Math.round(initialImgW - dx));
+        const newH = Math.max(20, Math.round(initialImgH - dy));
+        partState.imgX = Math.round(initialImgX + (initialImgW - newW));
+        partState.imgY = Math.round(initialImgY + (initialImgH - newH));
+        partState.imgW = newW;
+        partState.imgH = newH;
+      }
+
+      syncImageInputs();
+      renderPartCanvas();
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      if (isPotentialMove && !isTransforming) {
+        // Pure click on the image surface - treat as grid pin placement!
+        isPotentialMove = false;
+        transformMode = null;
+
+        const pad = 120;
+        const rect = partGridSvg.getBoundingClientRect();
+        const ptX = (e.clientX - rect.left) / partCanvasZoom - pad;
+        const ptY = (e.clientY - rect.top) / partCanvasZoom - pad;
+        const gx = Math.round(ptX / 20);
+        const gy = Math.round(ptY / 20);
+
+        if (gx >= 0 && gx <= partState.width && gy >= 0 && gy <= partState.height) {
+          const dist = Math.hypot(ptX - gx * 20, ptY - gy * 20);
+          if (dist <= 15) {
+            togglePin(gx, gy);
+          }
+        }
+        return;
+      }
+
+      if (isTransforming) {
+        isTransforming = false;
+        isPotentialMove = false;
+        transformMode = null;
+        document.body.style.cursor = "";
+        renderPartCanvas();
+      }
+    });
+
+    // File Upload handling
+    partFileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      // Auto-populate part name from filename
+      const baseName = file.name.replace(/\.[^/.]+$/, "").replace(/[^A-Za-z0-9_]/g, "_");
+      if (baseName) {
+        partState.name = baseName;
+        partNameInput.value = baseName;
+      }
+
+      // Upload to server immediately
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        fetch("/api/upload_part", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, data: evt.target.result })
+        })
+          .then((resp) => resp.json())
+          .then((data) => {
+            if (data && data.status === "ok") {
+              partState.imagePath = data.path;
+              partState.serverUrl = data.url;
+              partState.blobUrl = null;
+
+              // Use cropped dimensions returned by server
+              if (data.width && data.height) {
+                const gridW = partState.width * 20;
+                const gridH = partState.height * 20;
+                const aspect = data.width / data.height;
+                if (aspect > 1) {
+                  // Landscape
+                  partState.imgW = gridW;
+                  partState.imgH = Math.max(20, Math.round(gridW / aspect));
+                } else {
+                  // Portrait
+                  partState.imgH = gridH;
+                  partState.imgW = Math.max(20, Math.round(gridH * aspect));
+                }
+                partState.imgX = Math.round((gridW - partState.imgW) / 2);
+                partState.imgY = Math.round((gridH - partState.imgH) / 2);
+                syncImageInputs();
+              }
+              renderPartCanvas();
+            }
+          })
+          .catch((err) => {
+            console.warn("Upload part failed:", err);
+          });
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Insert into Schematic
+    btnInsertPart.addEventListener("click", () => {
+      const partDsl = generatePartDsl();
+      // Also instantiate the component so it appears immediately on the main canvas!
+      const compInstance = `${partState.name}: ${partState.name}\n\n`;
+      const currentCode = codeInput.value;
+      codeInput.value = partDsl + "\n" + compInstance + currentCode;
+      updateLineNumbers();
+      partModal.classList.add("hidden");
+      compileSchematic();
+    });
+  }
+
+  function generatePartDsl() {
+    let lines = [];
+    lines.push(`part ${partState.name}:`);
+    const cleanImgPath = (partState.imagePath || "").replace(/^\/+/, "");
+    lines.push(`  image: ${cleanImgPath}`);
+    lines.push(`  size: ${partState.width}x${partState.height}`);
+
+    const defaultW = partState.width * 20;
+    const defaultH = partState.height * 20;
+    const rx = Math.round(partState.imgX);
+    const ry = Math.round(partState.imgY);
+    const rw = Math.round(partState.imgW);
+    const rh = Math.round(partState.imgH);
+
+    // If moved or resized away from default 0, 0, width*20, height*20:
+    if (rx !== 0 || ry !== 0 || rw !== defaultW || rh !== defaultH) {
+      lines.push(`  image_rect: ${rx}, ${ry}, ${rw}, ${rh}`);
+    }
+
+    lines.push(`  pins:`);
+    partState.pins.forEach((p) => {
+      lines.push(`    ${p.name}: ${p.x}, ${p.y}`);
+    });
+    return lines.join("\n") + "\n";
+  }
+
+  function renderPartBuilder() {
+    partNameInput.value = partState.name;
+    partWidthInput.value = partState.width;
+    partHeightInput.value = partState.height;
+    if (partState.imgW <= 0) partState.imgW = partState.width * 20;
+    if (partState.imgH <= 0) partState.imgH = partState.height * 20;
+    syncImageInputs();
+    renderPinsList();
+    renderPartCanvas();
+  }
+
+  function renderPinsList() {
+    pinsList.innerHTML = "";
+    pinCount.textContent = partState.pins.length;
+
+    partState.pins.forEach((p, idx) => {
+      const chip = document.createElement("div");
+      chip.className = "pin-chip";
+      chip.innerHTML = `
+        <div>
+          <span class="pin-chip-coord">(${p.x}, ${p.y})</span>
+          <input type="text" value="${escapeHtml(p.name)}" data-idx="${idx}" />
+        </div>
+        <button class="pin-chip-del" data-idx="${idx}" title="Remove Pin">&times;</button>
+      `;
+
+      const input = chip.querySelector("input");
+      input.addEventListener("input", (e) => {
+        partState.pins[idx].name = e.target.value.trim() || `P${idx + 1}`;
+        renderPartCanvas();
+      });
+
+      const delBtn = chip.querySelector(".pin-chip-del");
+      delBtn.addEventListener("click", () => {
+        partState.pins.splice(idx, 1);
+        renderPinsList();
+        renderPartCanvas();
+      });
+
+      pinsList.appendChild(chip);
+    });
+  }
+
+  function renderPartCanvas() {
+    const W = partState.width * 20;
+    const H = partState.height * 20;
+    const pad = 120; // Generous 120px workspace padding so nothing is cramped!
+    const totalW = W + pad * 2;
+    const totalH = H + pad * 2;
+
+    const displayW = Math.round(totalW * partCanvasZoom);
+    const displayH = Math.round(totalH * partCanvasZoom);
+
+    partGridSvg.setAttribute("viewBox", `${-pad} ${-pad} ${totalW} ${totalH}`);
+    partGridSvg.setAttribute("width", `${displayW}`);
+    partGridSvg.setAttribute("height", `${displayH}`);
+
+    // Resolve Image Source URL
+    let imgSrc = partState.serverUrl || partState.imagePath;
+    if (imgSrc && !imgSrc.startsWith("blob:") && !imgSrc.startsWith("data:") && !imgSrc.startsWith("/")) {
+      imgSrc = "/" + imgSrc;
+    }
+
+    // Sync HTML <img> tag (hardware-accelerated, transparent, zero-fail)
+    const imgEl = document.getElementById("part-image-preview");
+    if (imgEl) {
+      if (imgSrc) {
+        imgEl.src = imgSrc;
+        imgEl.style.display = "block";
+        imgEl.style.left = `${Math.round((pad + partState.imgX) * partCanvasZoom)}px`;
+        imgEl.style.top = `${Math.round((pad + partState.imgY) * partCanvasZoom)}px`;
+        imgEl.style.width = `${Math.round(partState.imgW * partCanvasZoom)}px`;
+        imgEl.style.height = `${Math.round(partState.imgH * partCanvasZoom)}px`;
+      } else {
+        imgEl.style.display = "none";
+      }
+    }
+
+    let svgHtml = [];
+
+    // Transparent Background rect
+    svgHtml.push(`<rect x="${-pad}" y="${-pad}" width="${totalW}" height="${totalH}" fill="transparent" />`);
+
+    // Part image (behind the grid points)
+    const ix = partState.imgX;
+    const iy = partState.imgY;
+    const iw = partState.imgW;
+    const ih = partState.imgH;
+
+    const activeOpacity = isTransforming ? "0.50" : "0.95";
+
+    if (imgEl) {
+      imgEl.style.opacity = activeOpacity;
+    }
+
+    if (imgSrc) {
+      svgHtml.push(
+        `<image href="${escapeHtml(imgSrc)}" xlink:href="${escapeHtml(imgSrc)}" x="${ix.toFixed(1)}" y="${iy.toFixed(1)}" ` +
+        `width="${iw.toFixed(1)}" height="${ih.toFixed(1)}" preserveAspectRatio="none" opacity="${activeOpacity}" />`
+      );
+    }
+
+    // Extended Grid Lines across the whole working canvas (subtle clean grid)
+    for (let x = -pad; x <= W + pad; x += 20) {
+      const isInside = x >= 0 && x <= W;
+      svgHtml.push(`<line x1="${x}" y1="${-pad}" x2="${x}" y2="${H + pad}" stroke="rgba(255, 255, 255, ${isInside ? '0.20' : '0.07'})" stroke-width="1" pointer-events="none" />`);
+    }
+    for (let y = -pad; y <= H + pad; y += 20) {
+      const isInside = y >= 0 && y <= H;
+      svgHtml.push(`<line x1="${-pad}" y1="${y}" x2="${W + pad}" y2="${y}" stroke="rgba(255, 255, 255, ${isInside ? '0.20' : '0.07'})" stroke-width="1" pointer-events="none" />`);
+    }
+
+    // Component Bounding Box (cyan dashed frame)
+    svgHtml.push(
+      `<rect x="0" y="0" width="${W}" height="${H}" rx="4" ry="4" ` +
+      `fill="none" stroke="#38bdf8" stroke-width="1.8" stroke-dasharray="6,4" pointer-events="none" />`
+    );
+
+    // Image Transform Rectangle: Drag Surface for Move (transparent)
+    svgHtml.push(
+      `<rect class="img-drag-surface" x="${ix.toFixed(1)}" y="${iy.toFixed(1)}" ` +
+      `width="${iw.toFixed(1)}" height="${ih.toFixed(1)}" fill="transparent" pointer-events="all" />`
+    );
+
+    // Image Transform Rectangle: Dashed Selection Border
+    svgHtml.push(
+      `<rect class="img-selection-border" x="${ix.toFixed(1)}" y="${iy.toFixed(1)}" ` +
+      `width="${iw.toFixed(1)}" height="${ih.toFixed(1)}" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="5,3" pointer-events="none" />`
+    );
+
+    // 8 Resize Handles (Independent X and Y scaling)
+    const hw = 10;
+    const halfHw = hw / 2;
+    const handles = [
+      { id: "nw", x: ix, y: iy, cls: "handle-nw" },
+      { id: "n",  x: ix + iw / 2, y: iy, cls: "handle-n" },
+      { id: "ne", x: ix + iw, y: iy, cls: "handle-ne" },
+      { id: "e",  x: ix + iw, y: iy + ih / 2, cls: "handle-e" },
+      { id: "se", x: ix + iw, y: iy + ih, cls: "handle-se" },
+      { id: "s",  x: ix + iw / 2, y: iy + ih, cls: "handle-s" },
+      { id: "sw", x: ix, y: iy + ih, cls: "handle-sw" },
+      { id: "w",  x: ix, y: iy + ih / 2, cls: "handle-w" }
+    ];
+
+    handles.forEach((h) => {
+      svgHtml.push(
+        `<rect class="transform-handle ${h.cls}" data-handle="${h.id}" ` +
+        `x="${(h.x - halfHw).toFixed(1)}" y="${(h.y - halfHw).toFixed(1)}" ` +
+        `width="${hw}" height="${hw}" rx="2" fill="#ffffff" stroke="#0284c7" stroke-width="2" />`
+      );
+    });
+
+    // Configured Pins - Dezenter, dezentes Pad + dezentes Label (keine riesigen Neonkreise)
+    partState.pins.forEach((p) => {
+      const px = p.x * 20;
+      const py = p.y * 20;
+      svgHtml.push(
+        `<g class="part-grid-pin-circle" data-gx="${p.x}" data-gy="${p.y}">` +
+        `<circle cx="${px}" cy="${py}" r="4.2" fill="#0f172a" stroke="#38bdf8" stroke-width="1.6" />` +
+        `<circle cx="${px}" cy="${py}" r="1.5" fill="#38bdf8" />` +
+        `</g>`
+      );
+
+      const anchor = p.x <= partState.width / 2 ? "end" : "start";
+      const tx = p.x <= partState.width / 2 ? px - 7 : px + 7;
+      const ty = py + 3.2;
+      svgHtml.push(
+        `<text x="${tx}" y="${ty}" text-anchor="${anchor}" font-family="ui-monospace, monospace" ` +
+        `font-size="9" font-weight="600" fill="#94a3b8" stroke="#0f172a" stroke-width="2.2" paint-order="stroke" pointer-events="none">${escapeHtml(p.name)}</text>`
+      );
+    });
+
+    // Hover Indicator (single reticle, only visible on hover)
+    svgHtml.push(
+      `<g id="grid-hover-reticle" style="display: none; pointer-events: none;">` +
+      `<circle cx="0" cy="0" r="4.5" fill="none" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="2,2" />` +
+      `</g>`
+    );
+
+    partGridSvg.innerHTML = svgHtml.join("\n");
+
+    // Force Firefox to evaluate SVG image loader
+    const svgImg = partGridSvg.querySelector("image");
+    if (svgImg && imgSrc) {
+      svgImg.setAttribute("href", imgSrc);
+      svgImg.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", imgSrc);
+    }
+
+    // Attach Transform Handle & Move Listeners
+    partGridSvg.querySelectorAll(".transform-handle").forEach((handleEl) => {
+      handleEl.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isTransforming = true;
+        transformMode = handleEl.getAttribute("data-handle");
+        startPointerX = e.clientX;
+        startPointerY = e.clientY;
+        initialImgX = partState.imgX;
+        initialImgY = partState.imgY;
+        initialImgW = partState.imgW;
+        initialImgH = partState.imgH;
+        renderPartCanvas();
+      });
+    });
+
+    const dragSurface = partGridSvg.querySelector(".img-drag-surface");
+    if (dragSurface) {
+      dragSurface.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        isPotentialMove = true;
+        isTransforming = false;
+        transformMode = "move";
+        startPointerX = e.clientX;
+        startPointerY = e.clientY;
+        initialImgX = partState.imgX;
+        initialImgY = partState.imgY;
+        initialImgW = partState.imgW;
+        initialImgH = partState.imgH;
+      });
+    }
+
+    // Click on existing pins to remove/edit
+    partGridSvg.querySelectorAll(".part-grid-pin-circle").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        if (isTransforming) return;
+        e.stopPropagation();
+        const gx = parseInt(el.getAttribute("data-gx"), 10);
+        const gy = parseInt(el.getAttribute("data-gy"), 10);
+        togglePin(gx, gy);
+      });
+    });
+
+    // Grid Hover & Click to Place Pin
+    partGridSvg.onmousemove = (e) => {
+      if (isTransforming) return;
+      const rect = partGridSvg.getBoundingClientRect();
+      const ptX = (e.clientX - rect.left) / partCanvasZoom - pad;
+      const ptY = (e.clientY - rect.top) / partCanvasZoom - pad;
+      const gx = Math.round(ptX / 20);
+      const gy = Math.round(ptY / 20);
+
+      const reticle = partGridSvg.querySelector("#grid-hover-reticle");
+      if (gx >= 0 && gx <= partState.width && gy >= 0 && gy <= partState.height) {
+        canvasCursorPos.textContent = `Col (x): ${gx}, Row (y): ${gy}`;
+        if (reticle) {
+          reticle.style.display = "block";
+          reticle.setAttribute("transform", `translate(${gx * 20}, ${gy * 20})`);
+        }
+      } else {
+        canvasCursorPos.textContent = `x: -, y: -`;
+        if (reticle) reticle.style.display = "none";
+      }
+    };
+
+    partGridSvg.onmouseleave = () => {
+      const reticle = partGridSvg.querySelector("#grid-hover-reticle");
+      if (reticle) reticle.style.display = "none";
+      canvasCursorPos.textContent = `x: -, y: -`;
+    };
+
+    partGridSvg.onclick = (e) => {
+      if (isTransforming) return;
+      if (e.target.closest(".transform-handle") || e.target.closest(".part-grid-pin-circle")) return;
+
+      const rect = partGridSvg.getBoundingClientRect();
+      const ptX = (e.clientX - rect.left) / partCanvasZoom - pad;
+      const ptY = (e.clientY - rect.top) / partCanvasZoom - pad;
+      const gx = Math.round(ptX / 20);
+      const gy = Math.round(ptY / 20);
+
+      if (gx >= 0 && gx <= partState.width && gy >= 0 && gy <= partState.height) {
+        const dist = Math.hypot(ptX - gx * 20, ptY - gy * 20);
+        if (dist <= 14) {
+          togglePin(gx, gy);
+        }
+      }
+    };
+  }
+
+  function togglePin(gx, gy) {
+    const existingIdx = partState.pins.findIndex((p) => p.x === gx && p.y === gy);
+    if (existingIdx >= 0) {
+      partState.pins.splice(existingIdx, 1);
+    } else {
+      // Suggest automatic pin name
+      let autoName = "";
+      if (gx === 0 && gy === 0) autoName = "VIN";
+      else if (gx === 0 && gy === partState.height) autoName = "GND";
+      else autoName = `P${partState.pins.length + 1}`;
+
+      partState.pins.push({ name: autoName, x: gx, y: gy });
+    }
+    renderPinsList();
+    renderPartCanvas();
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
   // Init
   updateLineNumbers();
   loadExamples();
 })();
+

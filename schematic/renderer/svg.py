@@ -119,7 +119,7 @@ class SvgRenderer:
         t = self.t
         min_x, min_y, vb_w, vb_h = self._bounds()
         svg: List[str] = [
-            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
             f'viewBox="{min_x:.1f} {min_y:.1f} {vb_w:.1f} {vb_h:.1f}" '
             f'class="schematic-canvas" '
             f'shape-rendering="geometricPrecision" text-rendering="geometricPrecision">',
@@ -161,7 +161,9 @@ class SvgRenderer:
 
         svg.append('<g id="schematic-components">')
         for comp in self.schematic.components.values():
-            if comp.is_standard:
+            if comp.image:
+                svg.append(self._render_custom_component(comp))
+            elif comp.is_standard:
                 svg.append(self._render_standard_component(comp))
             else:
                 svg.append(self._render_component(comp))
@@ -336,6 +338,83 @@ class SvgRenderer:
         for pin in comp.pins.values():
             parts.append(self._render_pin(pin))
         parts.append("</g>")
+        return "\n".join(parts)
+
+    # -------------------------------------------------------- custom image parts
+    def _render_custom_component(self, comp: Component) -> str:
+        t = self.t
+        parts = [f'<g id="comp-{html.escape(comp.id)}" class="component-custom" transform="translate(0, 0)">']
+        raw_img = comp.image.strip()
+        if not (raw_img.startswith("http://") or raw_img.startswith("https://") or raw_img.startswith("data:") or raw_img.startswith("/")):
+            raw_img = f"/{raw_img}"
+        img_href = html.escape(raw_img)
+        if comp.image_rect is not None:
+            ix, iy, iw, ih = comp.image_rect
+            img_x = comp.x + ix
+            img_y = comp.y + iy
+            img_w = iw
+            img_h = ih
+        else:
+            img_x = comp.x
+            img_y = comp.y
+            img_w = comp.width
+            img_h = comp.height
+        parts.append(
+            f'<image href="{img_href}" xlink:href="{img_href}" x="{img_x:.1f}" y="{img_y:.1f}" '
+            f'width="{img_w:.1f}" height="{img_h:.1f}" preserveAspectRatio="none" filter="url(#comp-shadow)" />'
+        )
+        # Outline boundary
+        parts.append(
+            f'<rect x="{comp.x:.1f}" y="{comp.y:.1f}" width="{comp.width:.1f}" height="{comp.height:.1f}" '
+            f'rx="4" ry="4" fill="none" stroke="{t.comp_border}" stroke-width="1.2" />'
+        )
+        # Component Title / ID Badge
+        parts.append(
+            f'<text x="{comp.x + 6.0:.1f}" y="{comp.y - 6.0:.1f}" font-family="{FONT_SANS}" font-size="10" '
+            f'font-weight="700" fill="{t.text_title}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">{html.escape(comp.id)}</text>'
+        )
+        # Pins
+        for pin in comp.pins.values():
+            parts.append(self._render_custom_pin(pin))
+        parts.append("</g>")
+        return "\n".join(parts)
+
+    def _render_custom_pin(self, pin: Pin) -> str:
+        t = self.t
+        parts = []
+        # 1. Lead line from pin pad on graphic to terminal
+        parts.append(
+            f'<line x1="{pin.lead_start.x:.1f}" y1="{pin.lead_start.y:.1f}" '
+            f'x2="{pin.position.x:.1f}" y2="{pin.position.y:.1f}" stroke="{t.lead}" stroke-width="1.8" />'
+        )
+        # 2. Prominent circle pad on the component graphic (at lead_start)
+        parts.append(
+            f'<circle cx="{pin.lead_start.x:.1f}" cy="{pin.lead_start.y:.1f}" r="4.5" '
+            f'fill="{t.comp_bg}" stroke="{t.value}" stroke-width="2.0" />'
+        )
+        parts.append(
+            f'<circle cx="{pin.lead_start.x:.1f}" cy="{pin.lead_start.y:.1f}" r="2.0" '
+            f'fill="{t.value}" />'
+        )
+        # 3. Connection terminal dot (at pin.position)
+        parts.append(
+            f'<circle cx="{pin.position.x:.1f}" cy="{pin.position.y:.1f}" r="2.2" fill="{t.terminal}" />'
+        )
+        # 4. Pin label text
+        if pin.display_name:
+            if pin.side == Side.LEFT:
+                tx, ty, anchor = pin.position.x - 6.0, pin.position.y + 3.5, "end"
+            elif pin.side == Side.RIGHT:
+                tx, ty, anchor = pin.position.x + 6.0, pin.position.y + 3.5, "start"
+            elif pin.side == Side.TOP:
+                tx, ty, anchor = pin.position.x, pin.position.y - 6.0, "middle"
+            else:
+                tx, ty, anchor = pin.position.x, pin.position.y + 14.0, "middle"
+            parts.append(
+                f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" '
+                f'font-size="9" font-weight="600" fill="{t.text_pin}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">'
+                f'{html.escape(pin.display_name)}</text>'
+            )
         return "\n".join(parts)
 
     def _render_pin(self, pin: Pin) -> str:

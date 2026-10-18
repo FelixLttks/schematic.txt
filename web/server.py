@@ -7,6 +7,8 @@ import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import threading
+import traceback
 from typing import Optional
 
 from schematic import ParseError
@@ -15,6 +17,8 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 PROJECT_DIR = BASE_DIR.parent
 EXAMPLES_DIR = PROJECT_DIR / "examples"
+
+_render_lock = threading.Lock()
 
 
 class SchematicHandler(BaseHTTPRequestHandler):
@@ -35,6 +39,15 @@ class SchematicHandler(BaseHTTPRequestHandler):
                 return
             mime_type, _ = mimetypes.guess_type(str(file_path))
             self._serve_file(file_path, mime_type or "application/octet-stream")
+        elif url_path.startswith("/parts/"):
+            rel_path = url_path[len("/parts/"):]
+            parts_dir = PROJECT_DIR / "parts"
+            file_path = (parts_dir / rel_path).resolve()
+            if not str(file_path).startswith(str(parts_dir)) or not file_path.is_file():
+                self._send_error(HTTPStatus.NOT_FOUND, "Part image not found")
+                return
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            self._serve_file(file_path, mime_type or "application/octet-stream")
         elif url_path == "/api/examples":
             self._handle_get_examples()
         else:
@@ -45,6 +58,8 @@ class SchematicHandler(BaseHTTPRequestHandler):
 
         if url_path == "/api/render":
             self._handle_render()
+        elif url_path == "/api/upload_part":
+            self._handle_upload_part()
         else:
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -79,24 +94,28 @@ class SchematicHandler(BaseHTTPRequestHandler):
             code = req.get("code", "")
             dark_theme = req.get("dark_theme", True)
 
-            # Hot-reload the whole schematic package so code edits take effect
-            # immediately: drop every cached submodule and import afresh.
-            import importlib
-            import sys
+            with _render_lock:
+                # Hot-reload the whole schematic package safely
+                import importlib
+                import sys
 
-            for name in [m for m in sys.modules if m == "schematic" or m.startswith("schematic.")]:
-                del sys.modules[name]
-            schematic = importlib.import_module("schematic")
-            config = importlib.import_module("schematic.layout.config")
+                for name in list(sys.modules.keys()):
+                    if name == "schematic" or name.startswith("schematic."):
+                        sys.modules.pop(name, None)
 
-            effort = req.get("effort", "balanced")
-            if effort not in config.EFFORT_LEVELS:
-                effort = "balanced"
-            svg = schematic.generate_schematic_svg(
-                code, dark_theme=dark_theme, config=config.config_for_effort(effort)
-            )
+                schematic = importlib.import_module("schematic")
+                config = importlib.import_module("schematic.layout.config")
+
+                effort = req.get("effort", "balanced")
+                if effort not in config.EFFORT_LEVELS:
+                    effort = "balanced"
+                svg = schematic.generate_schematic_svg(
+                    code, dark_theme=dark_theme, config=config.config_for_effort(effort)
+                )
+
             self._send_json({"status": "ok", "svg": svg})
         except Exception as exc:
+            traceback.print_exc()
             # Matched by name: after a hot reload the parser raises a freshly
             # created ParseError class, not the one imported at start-up.
             if isinstance(exc, ParseError) or type(exc).__name__ == "ParseError":
@@ -121,6 +140,60 @@ class SchematicHandler(BaseHTTPRequestHandler):
                         "message": str(exc),
                     },
                 }
+            )
+
+    def _handle_upload_part(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8")
+            req = json.loads(body)
+            filename = req.get("filename", "custom_part.svg")
+            import re
+            filename = re.sub(r"[^A-Za-z0-9_\-\.]", "_", Path(filename).name)
+            if not filename:
+                filename = "custom_part.png"
+
+            data_b64 = req.get("data", "")
+            if "," in data_b64:
+                data_b64 = data_b64.split(",", 1)[1]
+
+            import base64, io, time
+            img_bytes = base64.b64decode(data_b64)
+
+            # Auto-trim transparent borders for PNG/WebP so the board bounds align cleanly
+            img_w, img_h = None, None
+            try:
+                from PIL import Image
+                im = Image.open(io.BytesIO(img_bytes))
+                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                    bbox = im.getbbox()
+                    if bbox and bbox != (0, 0, im.width, im.height):
+                        im = im.crop(bbox)
+                        buf = io.BytesIO()
+                        im.save(buf, format="PNG")
+                        img_bytes = buf.getvalue()
+                img_w, img_h = im.width, im.height
+            except Exception:
+                pass
+
+            parts_dir = PROJECT_DIR / "parts"
+            parts_dir.mkdir(exist_ok=True, parents=True)
+            target_path = parts_dir / filename
+            target_path.write_bytes(img_bytes)
+
+            cache_buster = int(time.time() * 1000)
+            self._send_json({
+                "status": "ok",
+                "filename": filename,
+                "path": f"parts/{filename}",
+                "url": f"/parts/{filename}?v={cache_buster}",
+                "width": img_w,
+                "height": img_h,
+            })
+        except Exception as exc:
+            self._send_json(
+                {"status": "error", "error": {"message": str(exc)}},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
     def _send_json(self, data: dict, status: int = HTTPStatus.OK):
