@@ -3,18 +3,18 @@
 import unittest
 import re
 from schematic import parse_schematic, layout_schematic, render_schematic_to_svg
-from schematic.layout.config import LayoutConfig
-from schematic.layout.pin_allocator import rotate_component_90, size_and_place_pins
-from schematic.layout.placer import Placer
-from schematic.models import GRID_SIZE, Point, Side
+from schematic.layout.placement import PartModel
+from schematic.layout.shapes import apply_shape, image_shape
+from schematic.models import GRID_SIZE, Side
 
 
 class TestCustomParts(unittest.TestCase):
-    def test_custom_bottom_pin_labels_use_separate_lanes(self):
+    def test_bottom_pin_tags_run_along_their_wires(self):
         text = """
 part Board:
   image: parts/board.png
   size: 8x4
+  rotatable: false
   pins:
     VIN: 1, 4
     GND: 2, 4
@@ -29,12 +29,8 @@ Board1.VIN -> Peer.A
         sch = parse_schematic(text)
         layout_schematic(sch)
         svg = render_schematic_to_svg(sch)
-        labels = re.findall(
-            r'<text x="[^"]+" y="([^"]+)" text-anchor="middle"[^>]*>(VIN|GND|VIN-|ALRT)</text>',
-            svg,
-        )
-        self.assertEqual(len(labels), 4)
-        self.assertGreater(len({y for y, _ in labels}), 1)
+        tags = re.findall(r'<text [^>]*transform="rotate\(90 [^"]+\)"[^>]*>(VIN|GND|VIN-|ALRT)</text>', svg)
+        self.assertEqual(sorted(tags), ["ALRT", "GND", "VIN", "VIN-"])
 
     def test_parse_part_template_and_instantiation(self):
         text = """
@@ -202,77 +198,36 @@ Board1: Board
 """
         sch = parse_schematic(text)
         board = sch.components["Board1"]
-        size_and_place_pins(board)
-        self.assertEqual((board.width, board.height), (80.0, 100.0))
-
-        rotate_component_90(board, clockwise=True)
-        size_and_place_pins(board)
-        self.assertEqual(board.rotation, 90)
-        self.assertEqual((board.grid_width, board.grid_height), (5, 4))
+        upright = image_shape(board, 0)
+        self.assertEqual((upright.w, upright.h), (4, 5))
+        turned = image_shape(board, 90)
+        self.assertEqual((turned.w, turned.h), (5, 4))
+        # (gx, gy) -> (gh - gy, gx) for a clockwise quarter turn
+        self.assertEqual((turned.pins["A"].lx, turned.pins["A"].ly), (4, 0))
+        self.assertEqual((turned.pins["B"].lx, turned.pins["B"].ly), (3, 3))
+        self.assertEqual(turned.pins["A"].side, Side.TOP)
+        self.assertEqual(turned.pins["B"].side, Side.BOTTOM)
+        apply_shape(board, turned, 0, 0)
         self.assertEqual((board.width, board.height), (100.0, 80.0))
-        self.assertEqual((board.pins["A"].grid_x, board.pins["A"].grid_y), (4, 0))
-        self.assertEqual((board.pins["B"].grid_x, board.pins["B"].grid_y), (3, 3))
-        self.assertEqual(board.pins["A"].side, Side.TOP)
-        self.assertEqual(board.pins["B"].side, Side.BOTTOM)
         svg = render_schematic_to_svg(sch)
         self.assertIn("rotate(90 ", svg)
+        apply_shape(board, image_shape(board, 180), 0, 0)
+        self.assertIn("rotate(180 ", render_schematic_to_svg(sch))
 
-    def test_image_parts_get_a_rotation_candidate_by_default(self):
+    def test_image_parts_are_rotatable_unless_disabled(self):
         text = """
 part Module:
   image: parts/module.png
   size: 8x4
   pins:
     A: 0, 1
-    B: 0, 2
-    C: 0, 3
 
 Module1: Module
-Peer: Peer
-  pins: P1, P2, P3
-
-Module1.A -> Peer.P1
-Module1.B -> Peer.P2
-Module1.C -> Peer.P3
 """
         sch = parse_schematic(text)
-        placer = Placer(sch, config=LayoutConfig())
-        placer.place("layered", search=False)
-        variants = placer.orientation_variants()
-        self.assertIn("Module1", [cid for cid, _ in variants])
-
+        self.assertEqual(PartModel(sch.components["Module1"]).variants, [0, 90, 270])
         sch = parse_schematic(text.replace("size: 8x4", "size: 8x4\n  rotatable: false"))
-        placer = Placer(sch, config=LayoutConfig())
-        placer.place("layered", search=False)
-        self.assertNotIn("Module1", [cid for cid, _ in placer.orientation_variants()])
-
-    def test_orientation_override_rotates_part_unless_disabled(self):
-        text = """
-part Board:
-  image: parts/board.png
-  size: 4x5
-  pins:
-    A: 0, 1
-    B: 3, 2
-
-Board1: Board
-Peer: Peer
-  pins: P1, P2
-Board1.A -> Peer.P1
-Board1.B -> Peer.P2
-"""
-        sch = parse_schematic(text)
-        Placer(sch, config=LayoutConfig(), orientation_overrides={"Board1": True},
-               keep_positions=True).place("layered", search=False)
-        board = sch.components["Board1"]
-        self.assertEqual(board.rotation, 90)
-        self.assertEqual((board.width, board.height), (100.0, 80.0))
-
-        sch = parse_schematic(text.replace("size: 4x5", "size: 4x5\n  rotatable: false"))
-        Placer(sch, config=LayoutConfig(), orientation_overrides={"Board1": True},
-               keep_positions=True).place("layered", search=False)
-        self.assertEqual(sch.components["Board1"].rotation, 0)
-
+        self.assertEqual(PartModel(sch.components["Module1"]).variants, [0])
 
     def test_duplicate_pin_names_in_custom_part_and_best_selection(self):
         text = """

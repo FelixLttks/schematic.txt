@@ -17,7 +17,7 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 from schematic.models import Component, Pin, Schematic, Side
-from schematic.layout.pin_allocator import is_vertical_symbol
+from schematic.layout.shapes import is_vertical_symbol
 from schematic.styles import net_color
 
 FONT_SANS = "system-ui, -apple-system, sans-serif"
@@ -360,14 +360,17 @@ class SvgRenderer:
         else:
             ix = iy = 0.0
             iw, ih = comp.width, comp.height
-        if rotation in (90, 270):
+        if rotation in (90, 180, 270):
             # The image definition stays in the unrotated local frame; rotate
             # it around the component centre onto the rotated footprint.
             cx = comp.x + comp.width / 2.0
             cy = comp.y + comp.height / 2.0
-            origin_x = comp.x + (comp.width - comp.height) / 2.0
-            origin_y = comp.y + (comp.height - comp.width) / 2.0
-            angle = 90 if rotation == 90 else -90
+            if rotation == 180:
+                origin_x, origin_y = comp.x, comp.y
+            else:
+                origin_x = comp.x + (comp.width - comp.height) / 2.0
+                origin_y = comp.y + (comp.height - comp.width) / 2.0
+            angle = {90: 90, 180: 180, 270: -90}[rotation]
             parts.append(f'<g transform="rotate({angle} {cx:.1f} {cy:.1f})">')
             parts.append(
                 f'<image href="{img_href}" xlink:href="{img_href}" x="{origin_x + ix:.1f}" y="{origin_y + iy:.1f}" '
@@ -390,37 +393,12 @@ class SvgRenderer:
             f'font-weight="700" fill="{t.text_title}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">{html.escape(comp.id)}</text>'
         )
         # Pins
-        label_lanes = self._custom_pin_label_lanes(comp)
         for pin in comp.pins.values():
-            parts.append(self._render_custom_pin(pin, label_lanes.get(pin.id, 0)))
+            parts.append(self._render_custom_pin(pin))
         parts.append("</g>")
         return "\n".join(parts)
 
-    def _custom_pin_label_lanes(self, comp: Component) -> Dict[str, int]:
-        """Assign lanes so adjacent custom-part captions do not overlap horizontally.
-        Pins on LEFT and RIGHT sides are stacked vertically and sit directly at their pin position.
-        Pins on TOP and BOTTOM sides may overlap horizontally if adjacent, so they can use alternating lanes."""
-        lanes: Dict[str, int] = {p.id: 0 for p in comp.pins.values()}
-        for side in (Side.TOP, Side.BOTTOM):
-            pins = [p for p in comp.pins.values() if p.side == side and p.display_name]
-            pins.sort(key=lambda p: (p.position.x, p.order, p.id))
-            occupied: List[List[Tuple[float, float]]] = []
-            for pin in pins:
-                width = max(18.0, len(pin.display_name) * 5.4)
-                interval = (pin.position.x - width / 2.0 - 3.0,
-                            pin.position.x + width / 2.0 + 3.0)
-                for lane, intervals in enumerate(occupied):
-                    if all(interval[1] <= lo or hi <= interval[0]
-                           for lo, hi in intervals):
-                        lanes[pin.id] = lane
-                        intervals.append(interval)
-                        break
-                else:
-                    lanes[pin.id] = len(occupied)
-                    occupied.append([interval])
-        return lanes
-
-    def _render_custom_pin(self, pin: Pin, lane: int = 0) -> str:
+    def _render_custom_pin(self, pin: Pin) -> str:
         t = self.t
         parts = []
         # 1. Lead line from pin pad on graphic to terminal
@@ -441,18 +419,22 @@ class SvgRenderer:
         parts.append(
             f'<circle cx="{pin.position.x:.1f}" cy="{pin.position.y:.1f}" r="2.2" fill="{t.terminal}" />'
         )
-        # 4. Pin label text
+        # 4. Pin tag: runs along the pin's own wire, just outside the terminal
+        #    (the layout reserves exactly this zone, see layout.shapes).
         if pin.display_name:
+            x, y = pin.position.x, pin.position.y
             if pin.side == Side.LEFT:
-                tx, ty, anchor = pin.position.x - 6.0, pin.position.y + 3.5 + lane * 12.0, "end"
+                tx, ty, anchor, rot = x - 4.0, y - 3.5, "end", ""
             elif pin.side == Side.RIGHT:
-                tx, ty, anchor = pin.position.x + 6.0, pin.position.y + 3.5 + lane * 12.0, "start"
+                tx, ty, anchor, rot = x + 4.0, y - 3.5, "start", ""
             elif pin.side == Side.TOP:
-                tx, ty, anchor = pin.position.x, pin.position.y - 6.0 - lane * 12.0, "middle"
+                tx, ty, anchor = x + 10.0, y - 3.0, "start"
+                rot = f' transform="rotate(-90 {tx:.1f} {ty:.1f})"'
             else:
-                tx, ty, anchor = pin.position.x, pin.position.y + 14.0 + lane * 12.0, "middle"
+                tx, ty, anchor = x + 3.0, y + 3.0, "start"
+                rot = f' transform="rotate(90 {tx:.1f} {ty:.1f})"'
             parts.append(
-                f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" '
+                f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}"{rot} font-family="{FONT_MONO}" '
                 f'font-size="8" font-weight="600" fill="{t.text_pin}" stroke="{t.label_halo}" stroke-width="3" paint-order="stroke">'
                 f'{html.escape(pin.display_name)}</text>'
             )

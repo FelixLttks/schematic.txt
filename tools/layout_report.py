@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from schematic import process_schematic, render_schematic_to_svg  # noqa: E402
+from schematic.layout.config import config_for_effort  # noqa: E402
 from schematic.layout.metrics import evaluate  # noqa: E402
 from schematic.serialize import schematic_from_dict, schematic_to_dict  # noqa: E402
 
@@ -124,13 +125,11 @@ def _to_png(svg_path: Path) -> Optional[Path]:
 
 _COLUMNS = [
     ("Score", "readability_score", "{:.1f}"),
+    ("Cost", "cost", "{:.0f}"),
     ("Cross", "crossings", "{}"),
     ("Bends", "bends", "{}"),
-    ("Jogs", "small_jogs", "{}"),
-    ("Near", "near_crossings", "{}"),
-    ("Tight", "tight_parallel_pairs", "{}"),
-    ("Detour", "detour_ratio", "{:.2f}"),
-    ("Parallel", "parallelism_score", "{:.2f}"),
+    ("Straight", "straight_connections", "{}"),
+    ("Length", "wire_length", "{:.0f}"),
     ("Viol.", "violation_count", "{}"),
 ]
 
@@ -152,6 +151,7 @@ def main() -> int:
     ap.add_argument("--cases", nargs="*", default=DEFAULT_CASES, help="glob patterns of input files")
     ap.add_argument("--no-png", action="store_true", help="skip PNG rasterisation")
     ap.add_argument("--geometry", action="store_true", help="also write the routed geometry as JSON per case")
+    ap.add_argument("--effort", default="balanced", help="effort level of the current engine (default: balanced)")
     args = ap.parse_args()
 
     out = (ROOT / args.out) if not os.path.isabs(args.out) else Path(args.out)
@@ -175,7 +175,7 @@ def main() -> int:
     for name, text in cases.items():
         entry: dict = {}
         t0 = time.perf_counter()
-        sch = process_schematic(text)
+        sch = process_schematic(text, config_for_effort(args.effort))
         entry["after_seconds"] = time.perf_counter() - t0
         after_rep = evaluate(sch)
         entry["after"] = after_rep.as_dict()

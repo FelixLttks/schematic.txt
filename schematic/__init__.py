@@ -17,9 +17,7 @@ from schematic.models import (
 from schematic.parser import ParseError, SchematicParser, parse_schematic
 from schematic.layout.config import LayoutConfig
 from schematic.layout.engine import LayoutResult, layout_schematic
-from schematic.layout.metrics import QualityReport, evaluate as evaluate_quality
-from schematic.layout.placer import place_schematic
-from schematic.layout.router import route_schematic
+from schematic.layout.metrics import QualityReport
 from schematic.renderer.svg import render_schematic_to_svg
 
 
@@ -50,8 +48,6 @@ __all__ = [
     "ParseError",
     "SchematicParser",
     "parse_schematic",
-    "place_schematic",
-    "route_schematic",
     "render_schematic_to_svg",
     "process_schematic",
     "generate_schematic_svg",
@@ -59,5 +55,4 @@ __all__ = [
     "LayoutConfig",
     "LayoutResult",
     "QualityReport",
-    "evaluate_quality",
 ]

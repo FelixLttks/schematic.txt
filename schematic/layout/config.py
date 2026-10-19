@@ -1,127 +1,93 @@
 """Tunable parameters of the layout engine.
 
-Every weight of the placement objective, the routing cost model and the
-readability score lives here, with its unit.  Costs are expressed in "grid
-steps": one unit equals the cost of 20 px of straight wire, so a weight of 6
-for a bend means "a bend is worth 120 px of extra wire".
+There is exactly **one** cost model.  The same weights price a placement
+(through the route estimate), steer the router (A* step costs) and score the
+final drawing, so the three stages always agree on what "better" means.
 
-Priority order encoded by the defaults (see docs/layout-engine.md):
-connectivity (hard) > readability > grouping > crossings > bends > spacing
-> stability > wire length > compactness.
+Units: with the defaults a bend is worth 10 grid steps (200 px) of extra
+wire and a crossing 30 grid steps (600 px).  Long wires are hard to follow
+too, so length is not negligible: a wire across a drawing of 100 grid steps
+costs as much as four bends.  The ratios encode the priorities
+of a wiring document: a wire that can be traced at a glance (no crossings,
+few bends) matters far more than a short or compact one.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Tuple
-
-from schematic.layout.metrics import ScoreWeights
-
-
-@dataclass
-class SpacingConfig:
-    """Geometric clearances in pixels (multiples of the 20 px grid)."""
-
-    margin: float = 80.0               # empty border around the drawing
-    min_h_gap: float = 100.0           # minimum gap between side-by-side components
-    min_v_gap: float = 60.0            # minimum gap between stacked components
-    track_gap: float = 20.0            # extra corridor width per wire that must jog in it
-    satellite_offset: float = 60.0     # distance of a pull-up / filter part from its pin
-    isolated_gap: float = 60.0         # spacing of unconnected parts in their row
-    group_gap: float = 160.0           # spacing between unconnected sub-circuits
-
-
-@dataclass
-class PlacementWeights:
-    """Weights of the estimated-routing objective used by placement search."""
-
-    bend: float = 5.0                  # per estimated bend of a connection
-    length: float = 0.12               # per grid step of estimated wire length
-    crossing: float = 9.0              # per estimated crossing of two connections
-    obstacle: float = 4.0              # per body an estimated route cuts through (plus its detour)
-    near_miss: float = 6.0             # facing pins offset by one grid step (tiny jog)
-    misfacing: float = 12.0            # pin faces away from its peer (wrap-around)
-    rail_factor: float = 0.25          # multiplier for connections of power rails
-    area: float = 0.004                # per grid step^2 of the bounding box
-    aspect: float = 1.0                # per unit of aspect ratio above `max_aspect`
-    max_aspect: float = 4.0
-    stability: float = 0.02            # per grid step moved away from the initial embedding
-
-
-@dataclass
-class RoutingWeights:
-    """Cost model of the grid router (A*), per grid step unless noted."""
-
-    step: float = 1.0
-    bend: float = 10.0                 # per bend
-    jog: float = 16.0                  # bend following another bend within one step
-    crossing: float = 8.0              # crossing an unrelated net
-    crossing_related: float = 20.0     # crossing a member of the same bundle / pair
-    near_foreign: float = 1.5          # running directly beside an unrelated wire
-    bundle_stray: float = 0.35         # bundle member not running beside a routed mate
-    pin_corridor: float = 3.0          # passing just in front of another net's pin
-    hug: float = 0.4                   # running directly along a component outline
-    label: float = 1.5                 # running through the name / value text of a part
-    junction: float = 1.0              # every new T-junction
-    rail_bend_factor: float = 1.0      # power/ground rails value straightness just like signals
-
-
-@dataclass
-class LayoutConfig:
-    spacing: SpacingConfig = field(default_factory=SpacingConfig)
-    placement: PlacementWeights = field(default_factory=PlacementWeights)
-    routing: RoutingWeights = field(default_factory=RoutingWeights)
-    score: ScoreWeights = field(default_factory=ScoreWeights)
-
-    # Placement candidates (seed strategy, run local search).  Each one is
-    # placed, routed and scored with the real quality metrics; the best wins.
-    candidates: Tuple[Tuple[str, bool], ...] = (("layered", False), ("layered", True), ("stress", True))
-    stress_iterations: int = 60        # global embedding iterations
-    search_sweeps: int = 4             # placement local-search sweeps (pins re-configured between)
-    search_passes: int = 3             # improvement passes over all parts within a sweep
-    search_shifts: Tuple[float, ...] = (20.0, 60.0, 140.0)  # translation moves (px)
-    search_partners: int = 3           # relocation targets: most strongly wired partners
-    orientation_candidates: int = 2    # extra routed candidates with a forced 2-pin part orientation
-    rotation_candidates: int = 4       # extra routed candidates that rotate any rotatable part by 90°
-    orientation_reroute_margin: float = 2.0  # first-pass gap still worth a rip-up comparison
-    orientation_accept_margin: float = 0.0   # minimum final score gain for a local orientation change
-    reroute_passes: int = 2            # rip-up-and-reroute passes on the winning candidate
-    spacing_retries: int = 2           # re-runs with wider corridors if pins stay unconnected
-    net_labels: bool = True            # place net-name labels on wires
-    outer_rail_pins: bool = True       # supply pins of stacked parts face away from the bus
-
-
-DEFAULT_CONFIG = LayoutConfig()
 
 EFFORT_LEVELS = ("fast", "balanced", "thorough")
 
 
-def config_for_effort(effort: str = "balanced") -> LayoutConfig:
-    """Preset trade-offs between layout quality and running time.
+@dataclass
+class Weights:
+    crossing: float = 12.0      # two different nets crossing
+    bend: float = 4.0           # a wire turning by 90 degrees
+    length: float = 0.4         # per grid step of wire
+    junction: float = 0.5       # per branch point (T) of a net
+    # Estimate only (the router makes these impossible or resolves them):
+    overlap: float = 12.0       # estimated contact of two nets (same line, wire ending on
+                                # another): the router must cross or detour
+    obstacle: float = 40.0      # estimated route through a component body
+    # Router and estimate:
+    near: float = 0.5           # per step directly beside a wire of an unrelated net (20 px)
+    stray: float = 0.4          # per step a bundle member does not run beside a routed mate
+                                # (bundle: signal nets joining exactly the same parts)
+    text: float = 2.0           # per step through a text zone (pin tag, part name)
+    pin_front: float = 2.0      # passing two steps in front of another net's pin (would box it in)
+    # Placement only:
+    perimeter: float = 0.2      # per grid step of drawing width + height (compactness)
+    rotation: float = 6.0       # image part turned by 90 degrees (180 is never used):
+                                # photos and their printed labels read best upright
+    # Distribution nets (many terminals, e.g. supply and ground) are drawn as
+    # wires like any other net, but their bends and length weigh less: they
+    # must reach everything, the signals must stay clean.
+    rail_factor: float = 0.5
+    rail_min_terminals: int = 5
 
-    * ``fast``: one placement candidate, shorter search, one rip-up pass --
-      for live previews of large drawings.
-    * ``balanced`` (default): three placement candidates, each routed and
-      scored; the winner gets two rip-up-and-reroute passes.
-    * ``thorough``: additional stress candidate without search, longer search
-      and more rip-up passes.
+
+@dataclass
+class LayoutConfig:
+    weights: Weights = field(default_factory=Weights)
+    clearance: int = 2              # free grid lines between footprints (min.)
+    group_gap: int = 6              # between unconnected sub-circuits
+    margin: int = 2                 # empty border (grid)
+    restarts: int = 6               # independent annealing runs (different seeds, run in parallel)
+    moves_per_part: int = 1000      # annealing moves per component and run
+    start_temperature: float = 0.3  # x mean uphill step of the start layout
+    routed_candidates: int = 3      # best placements that are routed for real
+    reroute_passes: int = 3         # rip-up-and-reroute passes
+    net_labels: bool = True
+    workers: int = 0                # parallel processes for independent runs (0: CPU count - 1)
+    seed: int = 1
+
+
+def config_for_effort(effort: str = "balanced") -> LayoutConfig:
+    """Quality / running-time presets.
+
+    Measured on the examples and test cases: the annealing effort is the
+    main lever (150 -> 1000 moves per part: -18 % cost, 1000 -> 2500: -4 %),
+    and the best of several independent runs removes most of the scatter
+    between seeds.  Runs execute in parallel processes.
+
+    * ``fast``: 2 runs x 300 moves -- live preview;
+    * ``balanced`` (default): 6 runs x 1000 moves, best 3 routed;
+    * ``thorough``: 14 runs x 2500 moves, best 4 routed (minutes).
     """
     cfg = LayoutConfig()
     if effort == "fast":
-        cfg.candidates = (("layered", True),)
-        cfg.search_sweeps = 2
-        cfg.search_passes = 2
-        cfg.search_shifts = (20.0, 60.0)
-        cfg.search_partners = 2
-        cfg.orientation_candidates = 1
-        cfg.rotation_candidates = 1
-        cfg.reroute_passes = 1
+        cfg.restarts = 2
+        cfg.moves_per_part = 300
+        cfg.routed_candidates = 1
+        cfg.reroute_passes = 2
     elif effort == "thorough":
-        cfg.candidates = (("layered", False), ("layered", True), ("stress", False), ("stress", True))
-        cfg.search_sweeps = 6
-        cfg.orientation_candidates = 4
-        cfg.rotation_candidates = 6
+        cfg.restarts = 14
+        cfg.moves_per_part = 2500
+        cfg.routed_candidates = 4
         cfg.reroute_passes = 4
     elif effort != "balanced":
         raise ValueError(f"unknown effort level {effort!r}; expected one of {', '.join(EFFORT_LEVELS)}")
     return cfg
+
+
+DEFAULT_CONFIG = LayoutConfig()

@@ -98,7 +98,7 @@ def main():
             data = result.report.as_dict()
             data["placement_candidate"] = result.strategy
             data["candidates"] = [
-                {"strategy": name, "score": score, "violations": viol} for name, score, viol in result.candidates
+                {"placement": name, "estimated_cost": est, "routed_cost": cost} for name, est, cost in result.candidates
             ]
             Path(args.json_report).write_text(json.dumps(data, indent=2), encoding="utf-8")
             print(f"Quality report saved to: {args.json_report}")

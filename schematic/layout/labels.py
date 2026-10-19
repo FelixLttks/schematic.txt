@@ -1,23 +1,19 @@
-"""Net-name label placement (annotation stage).
+"""Net-name labels.
 
-Every user-named net gets one label, placed on a horizontal wire segment of
-that net.  Candidates are scored greedily: a label must fit on its segment,
-must not overlap component bodies, other labels or wires of other nets, and
-prefers long segments close to the net's first pin (where a reader starts
-following the wire).  Nets without any free spot simply stay unlabelled --
-a missing label is better than one that hides a wire.
+Every user-named net (not a generated ``Comp_Pin`` name) gets its name
+written once, just above one of its horizontal wire segments: the longest
+segment where the text fits without touching a component, a pin, another
+label or a wire of another net.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from schematic.models import NetLabel, Schematic
 
-CHAR_W = 6.0        # approximate advance of the 9 px monospace label font
-LABEL_H = 10.0
-GAP = 3.0           # baseline offset above the wire
-
+CHAR_W = 5.6
+TEXT_H = 10.0
 Box = Tuple[float, float, float, float]
 
 
@@ -25,65 +21,48 @@ def _overlap(a: Box, b: Box) -> bool:
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def place_net_labels(schematic: Schematic, min_terminals: int = 2) -> List[NetLabel]:
-    comps = [
-        (c.x - 1.0, c.y - 1.0, c.x + c.width + 1.0, c.y + c.height + 1.0)
-        for c in schematic.components.values()
-    ]
-    # Pin labels and leads also occupy space next to the components.
-    for c in schematic.components.values():
+def place_net_labels(sch: Schematic) -> List[NetLabel]:
+    obstacles: List[Box] = []
+    for c in sch.components.values():
+        obstacles.append((c.x - 2, c.y - 14, c.x + c.width + 2, c.y + c.height + 2))
         for p in c.pins.values():
-            comps.append((min(p.position.x, p.lead_start.x) - 4.0, p.position.y - 6.0,
-                          max(p.position.x, p.lead_start.x) + 4.0, p.position.y + 6.0))
-    wires_by_net: Dict[str, List[Tuple[float, float, float, float]]] = {}
-    for w in schematic.wires:
-        x1, x2 = sorted((w.start.x, w.end.x))
-        y1, y2 = sorted((w.start.y, w.end.y))
-        wires_by_net.setdefault(w.net_name, []).append((x1, y1, x2, y2))
-    first_pin: Dict[str, Tuple[float, float]] = {}
-    for net in schematic.nets:
-        for conn in net.connections:
-            comp = schematic.components.get(conn.component_id)
-            pin = comp.pins.get(conn.pin_id) if (comp and conn.pin_id) else (comp.get_pin(conn.pin_name) if comp else None)
-            if pin is not None:
-                first_pin[net.name] = (pin.position.x, pin.position.y)
-                break
-
-    placed: List[Box] = []
+            obstacles.append((p.position.x - 4, p.position.y - 4, p.position.x + 4, p.position.y + 4))
+    foreign: Dict[str, List[Box]] = {}
+    for w in sch.wires:
+        box = (min(w.start.x, w.end.x) - 1, min(w.start.y, w.end.y) - 1,
+               max(w.start.x, w.end.x) + 1, max(w.start.y, w.end.y) + 1)
+        foreign.setdefault(w.net_name, []).append(box)
     labels: List[NetLabel] = []
-    nets = [n for n in schematic.nets if not n.auto_named and n.name in wires_by_net]
-    # Short names first: they fit in more places, long ones take what is left.
-    nets.sort(key=lambda n: (len(wires_by_net[n.name]), n.name))
-    for net in nets:
+    taken: List[Box] = []
+    for net in sch.nets:
+        if net.auto_named:
+            continue
         text = net.name
         width = len(text) * CHAR_W
-        best: Optional[Tuple[float, float, float]] = None
-        origin = first_pin.get(net.name, (0.0, 0.0))
-        for (x1, y1, x2, y2) in wires_by_net[net.name]:
-            if y1 != y2 or x2 - x1 < width + 16.0:
+        segs = [w for w in sch.wires if w.net_name == net.name and w.is_horizontal]
+        segs.sort(key=lambda w: (-abs(w.end.x - w.start.x), w.start.y, min(w.start.x, w.end.x)))
+        placed = False
+        for w in segs:
+            x0, x1 = sorted((w.start.x, w.end.x))
+            if x1 - x0 < width + 12:
                 continue
-            span = x2 - x1
-            steps = max(1, int((span - width - 16.0) // 20.0) + 1)
-            for i in range(steps):
-                lx = x1 + 8.0 + i * 20.0
-                box = (lx - 2.0, y1 - GAP - LABEL_H, lx + width + 2.0, y1 - 1.0)
-                if any(_overlap(box, c) for c in comps) or any(_overlap(box, b) for b in placed):
+            y = w.start.y
+            # Try positions along the segment, centre first.
+            span = x1 - x0 - width - 12
+            steps = max(1, int(span // 20))
+            offsets = sorted(range(steps + 1), key=lambda i: abs(i - steps / 2.0))
+            for i in offsets:
+                lx = x0 + 6 + span * (i / steps if steps else 0.5)
+                box = (lx, y - TEXT_H - 3, lx + width, y - 2)
+                if any(_overlap(box, o) for o in obstacles) or any(_overlap(box, t) for t in taken):
                     continue
-                if any(
-                    _overlap(box, (wx1 - 1.0, wy1 - 1.0, wx2 + 1.0, wy2 + 1.0))
-                    for segs in wires_by_net.values()
-                    for (wx1, wy1, wx2, wy2) in segs
-                    if (wx1, wy1, wx2, wy2) != (x1, y1, x2, y2)
-                ):
+                if any(_overlap(box, b) for name, bs in foreign.items() if name != net.name for b in bs):
                     continue
-                dist = abs(lx - origin[0]) + abs(y1 - origin[1])
-                score = dist - 2.0 * span
-                if best is None or score < best[0]:
-                    best = (score, lx, y1)
-        if best is None:
-            continue
-        _, lx, y = best
-        placed.append((lx - 2.0, y - GAP - LABEL_H, lx + width + 2.0, y - 1.0))
-        labels.append(NetLabel(text=text, x=lx, y=y - GAP, width=width, net_name=net.name))
-    schematic.labels = labels
+                labels.append(NetLabel(text=text, x=lx, y=y - 4, width=width, net_name=net.name))
+                taken.append(box)
+                placed = True
+                break
+            if placed:
+                break
+    sch.labels = labels
     return labels

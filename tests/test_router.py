@@ -1,77 +1,94 @@
-"""Router hard rules on hand-placed components."""
+"""Grid router: hard rules on hand-built situations."""
 
 import unittest
 
-from schematic import parse_schematic
-from schematic.models import Side
-from schematic.layout.metrics import evaluate
-from schematic.layout.pin_allocator import apply_order, size_and_place_pins
-from schematic.layout.router import GridRouter
-from schematic.layout.semantics import analyze
+from schematic.layout.config import Weights
+from schematic.layout.router import RNet, RTerminal, Router
+
+RIGHT, DOWN, LEFT, UP = 0, 1, 2, 3
 
 
-def _place(sch, positions, sides):
-    for cid, (x, y) in positions.items():
-        comp = sch.components[cid]
-        for p in comp.pins.values():
-            p.side = sides[cid]
-        apply_order(comp, lambda p: 0.0)
-        comp.x, comp.y = x, y
-        size_and_place_pins(comp)
+def make(width=20, height=12):
+    return Router(width, height, 0, 0, Weights())
 
 
-class TestRouterRules(unittest.TestCase):
-    TEXT = """
-    A: Left Part
-      pins: P1, P2, P3, P4
-    B: Right Part
-      pins: Q1, Q2, Q3, Q4
-    A.P1 -> B.Q4 : N1
-    A.P2 -> B.Q3 : N2
-    A.P3 -> B.Q2 : N3
-    A.P4 -> B.Q1 : N4
-    """
+def net(r, idx, *terms):
+    n = RNet(idx, f"N{idx}", 1.0, False, [RTerminal(f"C{i}", "p", x, y, d) for i, (x, y, d) in enumerate(terms)])
+    for t in n.terminals:
+        r.add_pin(t.x, t.y, t.d, idx)
+    r.nets.append(n)
+    return n
 
-    def _route(self, gap: float):
-        """Places A and B facing each other, ``gap`` px between their pin terminals."""
-        sch = parse_schematic(self.TEXT)
-        _place(sch, {"A": (0.0, 0.0), "B": (0.0, 0.0)}, {"A": Side.RIGHT, "B": Side.LEFT})
-        a = sch.components["A"]
-        _place(sch, {"B": (a.x + a.width + 40.0 + gap, 0.0)}, {"B": Side.LEFT})
-        sem = analyze(sch)
-        router = GridRouter(sch, semantics=sem)
-        router.route()
-        return sch, router, evaluate(sch, sem)
 
-    def test_inverted_bundle_is_connected_without_violations(self):
-        # Fully inverted pin orders force crossings; they must stay clean.
-        sch, router, rep = self._route(gap=200.0)
-        self.assertEqual(router.failures, [])
-        self.assertEqual(rep.violation_count, 0, rep.violations)
-        self.assertGreater(rep.crossings, 0)
+def edges_of(r, n):
+    return {tuple(sorted((r.xy(a), r.xy(b)))) for a, b in n.edges}
 
-    def test_impossible_corridor_is_reported_never_drawn_ambiguously(self):
-        # 60 px between the terminals leaves only the two escape columns and a
-        # fully inverted bundle boxes the middle wires in.  The router must not
-        # fake a connection: every failure is reported, nothing is ambiguous.
-        sch, router, rep = self._route(gap=60.0)
-        for kind in ("collinear_overlap", "t_touches", "dual_nodes", "foreign_terminal_contact",
-                     "wire_through_component"):
-            self.assertEqual(rep.violations[kind], 0, kind)
-        self.assertEqual(rep.violations["unrouted_pins"], len(router.failures))
 
-    def test_wires_enter_pins_perpendicular_to_the_edge(self):
-        sch, _, _ = self._route(gap=200.0)
-        outward = {Side.LEFT: (-1, 0), Side.RIGHT: (1, 0), Side.TOP: (0, -1), Side.BOTTOM: (0, 1)}
-        for comp in sch.components.values():
-            for pin in comp.pins.values():
-                touching = [w for w in sch.wires if pin.position in (w.start, w.end)]
-                self.assertTrue(touching, f"{comp.id}.{pin.name} has no wire")
-                for w in touching:
-                    other = w.end if w.start == pin.position else w.start
-                    dx, dy = other.x - pin.position.x, other.y - pin.position.y
-                    ox, oy = outward[pin.side]
-                    self.assertGreater(dx * ox + dy * oy, 0, f"{comp.id}.{pin.name} entered sideways")
+class TestRouter(unittest.TestCase):
+    def test_straight_connection(self):
+        r = make()
+        n = net(r, 0, (2, 5, RIGHT), (10, 5, LEFT))
+        r.route_all(1)
+        self.assertTrue(n.routed)
+        self.assertEqual(len(n.edges), 8)
+        self.assertEqual({p[1] for e in edges_of(r, n) for p in e}, {5})
+
+    def test_two_nets_never_share_an_edge_and_cross_cleanly(self):
+        r = make()
+        a = net(r, 0, (2, 5, RIGHT), (12, 5, LEFT))
+        b = net(r, 1, (7, 1, DOWN), (7, 10, UP))
+        r.route_all(1)
+        self.assertTrue(a.routed and b.routed)
+        self.assertFalse(edges_of(r, a) & edges_of(r, b))
+        self.assertEqual(r.net_cost(b) > 0, True)
+        # the shared node is a straight perpendicular crossing
+        self.assertIn(1, [len(r._nets_at(n)) - 1 for n in range(r.W * r.H) if len(r._nets_at(n)) == 2])
+
+    def test_wire_never_enters_a_body(self):
+        r = make()
+        r.block_rect(6, 2, 8, 8)
+        n = net(r, 0, (2, 5, RIGHT), (12, 5, LEFT))
+        r.route_all(1)
+        self.assertTrue(n.routed)
+        for e in edges_of(r, n):
+            for x, y in e:
+                self.assertFalse(6 <= x <= 8 and 2 <= y <= 8)
+
+    def test_pin_is_left_along_its_direction(self):
+        r = make()
+        n = net(r, 0, (5, 5, UP), (12, 9, LEFT))
+        r.route_all(1)
+        self.assertIn(((5, 4), (5, 5)), edges_of(r, n))
+
+    def test_foreign_pin_front_is_not_used(self):
+        r = make()
+        r.add_pin(7, 4, DOWN, 5)           # pin of another net pointing down at (7, 5)
+        n = net(r, 0, (2, 5, RIGHT), (12, 5, LEFT))
+        r.route_all(1)
+        self.assertTrue(n.routed)
+        self.assertNotIn((7, 5), {p for e in edges_of(r, n) for p in e})
+
+    def test_impossible_connection_is_reported(self):
+        r = make()
+        r.block_rect(0, 0, 19, 4)
+        r.block_rect(0, 6, 19, 11)
+        r.block_rect(6, 5, 6, 5)           # wall across the only corridor
+        n = net(r, 0, (2, 5, RIGHT), (12, 5, LEFT))
+        r.route_all(1)
+        self.assertFalse(n.routed)
+        self.assertTrue(n.failed_terms)
+
+    def test_multi_terminal_net_forms_a_tree(self):
+        r = make()
+        n = net(r, 0, (2, 5, RIGHT), (12, 2, LEFT), (12, 9, LEFT))
+        r.route_all(1)
+        self.assertTrue(n.routed)
+        deg = {}
+        for a, b in n.edges:
+            deg[a] = deg.get(a, 0) + 1
+            deg[b] = deg.get(b, 0) + 1
+        self.assertEqual(sum(1 for d in deg.values() if d == 3), 1)   # one T-junction
+        self.assertFalse(any(d >= 4 for d in deg.values()))
 
 
 if __name__ == "__main__":
