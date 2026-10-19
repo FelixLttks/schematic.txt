@@ -1,67 +1,55 @@
 """Net colours shared by the router (``net.color``) and the SVG renderer.
 
-Colours encode the semantic class of a net so that related wires are
-recognisable at a glance: ground is grey, supplies are red / orange, and each
-bus family gets one hue.
+The *only* place where a net name is interpreted: ground nets are drawn black
+(slate on the dark theme) and positive supply nets red.  Every other net gets
+a stable colour from a palette, chosen from the net's name hash -- colours
+never influence placement or routing.
 """
 
 from __future__ import annotations
 
+import re
+import zlib
 from typing import Optional, Tuple
 
 # (dark theme, light theme)
-_PALETTE = {
-    "ground": ("#64748b", "#475569"),
-    "battery": ("#f97316", "#ea580c"),
-    "power": ("#ef4444", "#dc2626"),
-    "analog": ("#ec4899", "#db2777"),
-    "pulse": ("#06b6d4", "#0891b2"),
-    "sda": ("#38bdf8", "#0284c7"),
-    "scl": ("#10b981", "#059669"),
-    "mosi": ("#818cf8", "#4f46e5"),
-    "miso": ("#c084fc", "#9333ea"),
-    "clock": ("#10b981", "#059669"),
-    "select": ("#fbbf24", "#d97706"),
-    "tx": ("#f59e0b", "#d97706"),
-    "rx": ("#2dd4bf", "#0d9488"),
-    "control": ("#a78bfa", "#7c3aed"),
-    "signal": ("#38bdf8", "#0284c7"),
-}
+_GROUND = ("#94a3b8", "#111827")
+_POSITIVE = ("#ef4444", "#dc2626")
+_PALETTE = (
+    ("#38bdf8", "#0284c7"),
+    ("#10b981", "#059669"),
+    ("#f59e0b", "#d97706"),
+    ("#818cf8", "#4f46e5"),
+    ("#ec4899", "#db2777"),
+    ("#2dd4bf", "#0d9488"),
+    ("#c084fc", "#9333ea"),
+    ("#f97316", "#ea580c"),
+    ("#a3e635", "#65a30d"),
+    ("#06b6d4", "#0891b2"),
+)
+
+_TOKEN = re.compile(r"[\s_\-\.\/\(\)\[\]:]+")
+_GROUND_TOKENS = {"GND", "GROUND", "VSS", "AGND", "DGND", "PGND", "0V", "NEG"}
+_POSITIVE_TOKENS = {"VCC", "VDD", "VIN", "VBUS", "VBAT", "VBATT", "VSYS", "VOUT", "BAT", "BATT",
+                    "POS", "V+", "+", "PWR"}
+_VOLTAGE = re.compile(r"^\+?\d+(\.\d+)?V\d*$|^\d+V\d+$")
 
 
 def _category(name: str) -> str:
-    nu = name.upper()
-    if any(k in nu for k in ("GND", "VSS", "NEG", "RETURN")):
+    toks = [t for t in _TOKEN.split(name.upper()) if t]
+    if any(t in _GROUND_TOKENS or t.endswith("GND") or t.startswith("GND") for t in toks):
         return "ground"
-    if any(k in nu for k in ("BAT", "RAW", "HV", "36V", "48V")):
-        return "battery"
-    if any(k in nu for k in ("VCC", "VDD", "VIN", "VOUT", "PWR", "3V3", "5V", "12V", "24V", "VBUS")):
-        return "power"
-    if any(k in nu for k in ("ANALOG", "ADC", "SENSE", "DIFF")):
-        return "analog"
-    if any(k in nu for k in ("INT", "IRQ", "PWM", "PULSE")):
-        return "pulse"
-    if "SDA" in nu:
-        return "sda"
-    if "SCL" in nu:
-        return "scl"
-    if "MOSI" in nu:
-        return "mosi"
-    if "MISO" in nu:
-        return "miso"
-    if "SCK" in nu or "CLK" in nu:
-        return "clock"
-    if "CS" in nu or "SS" in nu:
-        return "select"
-    if "TX" in nu:
-        return "tx"
-    if "RX" in nu:
-        return "rx"
-    if any(k in nu for k in ("EN", "ENABLE", "RST", "RESET", "CTRL")):
-        return "control"
+    if any(t in _POSITIVE_TOKENS or _VOLTAGE.match(t) for t in toks):
+        return "positive"
     return "signal"
 
 
 def net_color(name: str, dark_theme: bool = True, category: Optional[str] = None) -> str:
-    pair: Tuple[str, str] = _PALETTE[category or _category(name)]
+    cat = category or _category(name)
+    if cat == "ground":
+        pair: Tuple[str, str] = _GROUND
+    elif cat in ("positive", "power"):
+        pair = _POSITIVE
+    else:
+        pair = _PALETTE[zlib.crc32(name.encode("utf-8")) % len(_PALETTE)]
     return pair[0] if dark_theme else pair[1]

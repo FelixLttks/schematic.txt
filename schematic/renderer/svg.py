@@ -18,7 +18,6 @@ from typing import Dict, List, Optional, Tuple
 
 from schematic.models import Component, Pin, Schematic, Side
 from schematic.layout.pin_allocator import is_vertical_symbol
-from schematic.layout.semantics import NetClass, analyze
 from schematic.styles import net_color
 
 FONT_SANS = "system-ui, -apple-system, sans-serif"
@@ -67,17 +66,8 @@ class SvgRenderer:
         self.dark_theme = dark_theme
         self.t = _Theme(dark_theme)
         self._colors: Dict[str, str] = {}
-        sem = analyze(schematic)
         for net in schematic.nets:
-            info = sem.nets.get(net.name)
-            category = None
-            if info is not None and info.cls == NetClass.GROUND:
-                category = "ground"
-            elif info is not None and info.cls == NetClass.POWER and not any(
-                k in net.name.upper() for k in ("BAT", "RAW", "HV", "36V", "48V")
-            ):
-                category = "power"
-            self._colors[net.name] = net_color(net.name, dark_theme, category)
+            self._colors[net.name] = net_color(net.name, dark_theme)
 
     def color_of(self, net_name: str) -> str:
         return self._colors.get(net_name) or net_color(net_name, self.dark_theme)

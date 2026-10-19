@@ -51,7 +51,7 @@ from schematic.layout.pin_allocator import (
 )
 from schematic.layout.search import LocalSearchMixin
 from schematic.layout.seeds import LayeredSeedMixin, StressSeedMixin
-from schematic.layout.semantics import NetClass, Semantics, analyze
+from schematic.layout.semantics import Semantics, analyze
 
 Pt = Tuple[float, float]
 
@@ -287,19 +287,13 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
         (p1, n1), (p2, n2) = sorted(pin_net.items())
         i1, i2 = self.sem.nets[n1.name], self.sem.nets[n2.name]
         if role == "shunt":
-            if comp.kind == "diode" and {i1.cls, i2.cls} == {NetClass.POWER, NetClass.GROUND}:
-                p_pwr, p_gnd, n_pwr, n_gnd = (p1, p2, n1, n2) if i1.cls == NetClass.POWER else (p2, p1, n2, n1)
-                near, far, near_net = p_pwr, p_gnd, n_pwr
-                above = False
-            else:
-                near, far, near_net, far_info = (p1, p2, n1, i2) if not i1.is_power_like else (p2, p1, n2, i1)
-                above = far_info.cls == NetClass.POWER
-        else:  # decoupling: hang below the supply pin it decouples
-            if i1.cls == NetClass.POWER:
-                near, far, near_net = p1, p2, n1
-            else:
-                near, far, near_net = p2, p1, n2
-            above = False
+            # One pin on a distribution net (far), the other on an ordinary net (near).
+            near, far, near_net = (p1, p2, n1) if not i1.is_rail else (p2, p1, n2)
+        else:  # decoupling: between two distribution nets, hang off the smaller one
+            first_smaller = (i1.terminal_count, list(self.sem.nets).index(n1.name)) <= \
+                (i2.terminal_count, list(self.sem.nets).index(n2.name))
+            near, far, near_net = (p1, p2, n1) if first_smaller else (p2, p1, n2)
+        above = False
         anchors = [
             (t_cid, pid) for t_cid, pid in self._terminals(near_net)
             if t_cid != cid and t_cid not in candidates
@@ -481,10 +475,6 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
                 me = self._terminal_abs(cid, pid, positions)
                 cand.sort(key=lambda q: abs(q[0] - me[0]) + abs(q[1] - me[1]))
                 cand = cand[:2]
-            elif info.is_power_like and not info.is_rail and len(cand) > 1:
-                me = self._terminal_abs(cid, pid, positions)
-                cand.sort(key=lambda q: abs(q[0] - me[0]) + abs(q[1] - me[1]))
-                cand = cand[:1]
             pts.extend(cand)
         return pts
 
@@ -575,7 +565,7 @@ class Placer(LayeredSeedMixin, StressSeedMixin, LocalSearchMixin):
             def key(pin: Pin, cid=cid) -> float:
                 info = self._pin_net_info(cid, pin.id)
                 if info is not None and info.is_rail:
-                    return -1e6 if info.cls == NetClass.POWER else 1e6
+                    return -1e6 + list(self.sem.nets).index(info.name)
                 pts = self._peer_points(cid, pin.id, positions)
                 if not pts:
                     return 5e5
@@ -1132,7 +1122,7 @@ def label_width(comp: Component) -> float:
 
 
 def _can_be_vertical(comp: Component) -> bool:
-    return comp.kind in ("resistor", "capacitor", "inductor", "diode", "led", "fuse")
+    return comp.is_standard and len(comp.pins) == 2
 
 
 def place_schematic(schematic: Schematic, config: Optional[LayoutConfig] = None,

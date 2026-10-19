@@ -48,27 +48,8 @@ SIDE_CW: Dict[Side, Side] = {
 }
 SIDE_CCW: Dict[Side, Side] = {v: k for k, v in SIDE_CW.items()}
 
-_POWER_WORDS = ("VCC", "3V3", "5V", "VIN", "VDD", "VBUS", "VBAT", "+")
-_GROUND_WORDS = ("GND", "VSS")
-
-
 def snap(v: float) -> float:
     return round(v / GRID_SIZE) * GRID_SIZE
-
-
-def conventional_rank(pin: Pin) -> float:
-    """Fallback ordering: supply pins first, ground last, clocks before data."""
-    name = pin.name.upper()
-    label = pin.label.upper()
-    if any(w in name or w in label for w in _GROUND_WORDS):
-        return 100.0
-    if any(w in name or w in label for w in _POWER_WORDS):
-        return 0.0
-    if any(w in name or w in label for w in ("SCL", "SCK", "CLK")):
-        return 20.0
-    if any(w in name or w in label for w in ("SDA", "MOSI", "MISO", "TX", "RX")):
-        return 30.0
-    return 50.0
 
 
 def pins_on(comp: Component, side: Side) -> List[Pin]:
@@ -92,7 +73,8 @@ def apply_order(comp: Component, key: Callable[[Pin], float]) -> None:
         declared = [p for p in pins if p.side_specified]
         free = [p for p in pins if not p.side_specified]
         declared.sort(key=lambda p: p.order)
-        free.sort(key=lambda p: (key(p), conventional_rank(p), p.name, p.id))
+        declared_index = {pid: i for i, pid in enumerate(comp.pins)}
+        free.sort(key=lambda p: (key(p), declared_index[p.id]))
         for i, p in enumerate(declared + free):
             p.order = i
 
@@ -292,11 +274,9 @@ def orient_switch(comp: Component, common_side: Side) -> None:
 
 
 def switch_common(comp: Component) -> Pin:
+    """The common terminal of a 3-pin switch is its middle pin (declaration order)."""
     pins = list(comp.pins.values())
-    for p in pins:
-        if p.name.upper() in ("2", "COM", "COMMON", "C", "IN"):
-            return p
-    return pins[1] if len(pins) >= 2 else pins[0]
+    return pins[len(pins) // 2] if len(pins) >= 2 else pins[0]
 
 
 def default_sides(comp: Component) -> None:
@@ -306,9 +286,7 @@ def default_sides(comp: Component) -> None:
         return
     if comp.is_standard and len(comp.pins) == 2 and len(free) == 2:
         a, b = free
-        # Inputs / anodes on the left, otherwise declaration order.
-        b_first = b.name.upper() in ("IN", "A", "ANODE") and a.name.upper() not in ("IN", "A", "ANODE")
-        orient_two_pin(comp, b if b_first else a, Side.LEFT)
+        orient_two_pin(comp, a, Side.LEFT)
         return
     if comp.kind == "switch" and len(comp.pins) == 3 and len(free) == 3:
         orient_switch(comp, Side.LEFT)

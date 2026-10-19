@@ -33,7 +33,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from schematic.models import GRID_SIZE, Point, Schematic, Side, WireJunction, WireSegment
 from schematic.layout.config import DEFAULT_CONFIG, LayoutConfig
 from schematic.layout.pin_allocator import resolve_pin
-from schematic.layout.semantics import NetClass, Semantics, analyze
+from schematic.layout.semantics import Semantics, analyze
 from schematic.styles import net_color
 
 RIGHT, LEFT, DOWN, UP, NONE = 0, 1, 2, 3, 4
@@ -196,7 +196,7 @@ class GridRouter:
                 if self.sem.related(st.name, other.name):
                     st.related.add(other.index)
                     a, b = self.sem.nets.get(st.name), self.sem.nets.get(other.name)
-                    if a and b and ((a.bundle and a.bundle == b.bundle) or a.diff_partner == other.name):
+                    if a and b and a.bundle and a.bundle == b.bundle:
                         st.mates.add(other.index)
 
         # Terminals, escape nodes and pin corridors.
@@ -305,7 +305,7 @@ class GridRouter:
             if straight(st):
                 tier = 0
             elif st.is_rail:
-                tier = 4 if info and info.cls == NetClass.GROUND else 3
+                tier = 3
             elif st.is_power:
                 tier = 2
             else:
@@ -1027,15 +1027,7 @@ class GridRouter:
         junctions: List[WireJunction] = []
         for st in self.nets:
             net = self.sch.nets[st.index]
-            info = self.sem.nets.get(net.name)
-            category = None
-            if info is not None and info.cls == NetClass.GROUND:
-                category = "ground"
-            elif info is not None and info.cls == NetClass.POWER and not any(
-                k in net.name.upper() for k in ("BAT", "RAW", "HV", "36V", "48V")
-            ):
-                category = "power"
-            color = net_color(net.name, dark_theme=True, category=category)
+            color = net_color(net.name, dark_theme=True)
             net.color = color
             if not st.adj:
                 continue

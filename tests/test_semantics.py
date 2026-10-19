@@ -4,22 +4,7 @@ import unittest
 
 from schematic import parse_schematic
 from schematic.layout.normalize import merge_shared_pin_nets
-from schematic.layout.semantics import NetClass, analyze, classify_name, diff_pair_base
-
-
-class TestNetClassification(unittest.TestCase):
-    def test_classify_names(self):
-        for name in ("GND", "AGND", "PGND", "VSS", "GND_DIGITAL"):
-            self.assertEqual(classify_name(name), NetClass.GROUND, name)
-        for name in ("3V3", "VCC", "5V_RAW", "+12V", "VBAT", "1V8", "DISP_VCC", "BATT_POS"):
-            self.assertEqual(classify_name(name), NetClass.POWER, name)
-        for name in ("I2C_SDA", "SPI_MOSI", "LED_DRIVE", "SPEED_SIGNAL", "SHUNT_P"):
-            self.assertIsNone(classify_name(name), name)
-
-    def test_diff_pair_suffixes(self):
-        self.assertEqual(diff_pair_base("USB_D_P"), ("USB_D", "P"))
-        self.assertEqual(diff_pair_base("CAN_L"), ("CAN", "L"))
-        self.assertEqual(diff_pair_base("D+"), ("D", "+"))
+from schematic.layout.semantics import analyze
 
 
 class TestAnalyze(unittest.TestCase):
@@ -30,6 +15,8 @@ class TestAnalyze(unittest.TestCase):
       pins: VCC, GND, SDA, SCL
     Display: Display
       pins: VCC, GND, SDA, SCL
+    Aux: Aux
+      pins: VCC, GND
     USB: Connector
       pins: D+, D-
     Rpu: resistor 10k
@@ -38,11 +25,13 @@ class TestAnalyze(unittest.TestCase):
       pins: 1, 2
     F1: fuse 1A
       pins: IN, OUT
+    Rs: resistor 1k
+      pins: 1, 2
     Load: Load
       pins: IN
 
-    MCU.3V3 -> Sensor.VCC, Display.VCC, Rpu.1, Cdec.1 : 3V3
-    MCU.GND -> Sensor.GND, Display.GND, Cdec.2 : GND
+    MCU.3V3 -> Sensor.VCC, Display.VCC, Aux.VCC, Rpu.1, Cdec.1 : 3V3
+    MCU.GND -> Sensor.GND, Display.GND, Aux.GND, Cdec.2 : GND
     MCU.SDA -> Sensor.SDA, Display.SDA : I2C_SDA
     MCU.SCL -> Sensor.SCL, Display.SCL : I2C_SCL
     MCU.DP -> USB.D+ : USB_D_P
@@ -50,36 +39,46 @@ class TestAnalyze(unittest.TestCase):
     Rpu.2 -> MCU.EN : EN
     MCU.3V3 -> F1.IN : 3V3
     F1.OUT -> Load.IN : LOAD_PWR
+    Load.IN -> Rs.1 : LOAD_PWR
+    Rs.2 -> USB.D- : USB_D_N
     """
 
     def setUp(self):
         self.sch = parse_schematic(self.TEXT)
         self.sem = analyze(self.sch)
 
-    def test_rails_and_classes(self):
+    def test_rails_are_structural(self):
         self.assertTrue(self.sem.nets["GND"].is_rail)
-        self.assertEqual(self.sem.nets["GND"].cls, NetClass.GROUND)
         self.assertTrue(self.sem.nets["3V3"].is_rail)
-        self.assertEqual(self.sem.nets["I2C_SDA"].cls, NetClass.SIGNAL)
         self.assertFalse(self.sem.nets["I2C_SDA"].is_rail)
 
-    def test_bundles_and_pairs(self):
+    def test_bundles(self):
         sda, scl = self.sem.nets["I2C_SDA"], self.sem.nets["I2C_SCL"]
         self.assertIsNotNone(sda.bundle)
         self.assertEqual(sda.bundle, scl.bundle)
         self.assertEqual(self.sem.bundles[sda.bundle].kind, "bus")
         self.assertTrue(self.sem.related("I2C_SDA", "I2C_SCL"))
-        self.assertEqual(self.sem.nets["USB_D_P"].diff_partner, "USB_D_N")
-        self.assertEqual(self.sem.bundles[self.sem.nets["USB_D_P"].bundle].kind, "diff")
         self.assertFalse(self.sem.related("I2C_SDA", "USB_D_P"))
 
     def test_component_roles(self):
         roles = self.sem.component_roles
-        self.assertEqual(roles["Rpu"], "shunt")        # pull-up: supply + signal
-        self.assertEqual(roles["Cdec"], "decoupling")  # supply + ground
-        self.assertEqual(roles["F1"], "series")        # in the power path
+        self.assertEqual(roles["Rpu"], "shunt")        # one distribution net + one other net
+        self.assertEqual(roles["Cdec"], "decoupling")  # between two distribution nets
+        self.assertEqual(roles["F1"], "shunt")        # same shape as a pull-up: names/kinds do not matter
+        self.assertEqual(roles["Rs"], "series")        # between two ordinary nets
         self.assertEqual(roles["MCU"], "module")
         self.assertIn("MCU", self.sem.hubs)
+
+    def test_names_are_irrelevant(self):
+        """Renaming nets and pins must not change the analysis."""
+        text = self.TEXT
+        for old, new in (("3V3", "NETA"), ("GND", "NETB"), ("I2C_SDA", "X1"), ("I2C_SCL", "X2")):
+            text = text.replace(old, new)
+        sem2 = analyze(parse_schematic(text))
+        self.assertEqual(sem2.component_roles, self.sem.component_roles)
+        self.assertEqual(sem2.hubs, self.sem.hubs)
+        self.assertEqual([i.is_rail for i in sem2.nets.values()],
+                         [i.is_rail for i in self.sem.nets.values()])
 
 
 class TestKindDetection(unittest.TestCase):
