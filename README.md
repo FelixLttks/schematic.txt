@@ -9,7 +9,7 @@ Ein modulares, textbasiertes CAD/Schaltplan-Werkzeug zur Beschreibung von elektr
 - **Textbasiertes Format (Git-tauglich)**: Reiner Text (DSL oder YAML). Einfach zu versionieren, per Diff nachvollziehbar und konfliktarm zu mergen.
 - **Verbindungen beschreiben, nicht zeichnen**: Einfache Schreibweise wie `ESP32.GND -> Sensor.GND, OLED.GND`. Pins und Komponenten werden bei Bedarf automatisch inferiert.
 - **Übersichtlichkeit vor Kompaktheit**: Das Layout wird für Menschen optimiert – wenige Kreuzungen, gerade Verbindungen, kurze Wege, Busse und Versorgung als Stamm mit Abzweigen. Ein einziges Kostenmodell bewertet Platzierung, Routing und Ergebnis gleich. Verbindungstreue ist eine harte Bedingung und wird bei jedem Lauf unabhängig geprüft.
-- **Optimierendes 2D-Placement**: Kein manuelles Positionieren nötig. Positionen, Drehungen und die Seiten freier Pins sind Variablen einer Optimierung (analytische Startlösung + Simulated Annealing auf einer Routing-Schätzung, die mit dem Router übereinstimmt). Mehrere Läufe werden tatsächlich geroutet – die beste Zeichnung gewinnt. Namen haben keinen Einfluss auf das Layout (nur auf Farben).
+- **Optimierendes 2D-Placement**: Kein manuelles Positionieren nötig. Positionen, Drehungen und die Seiten freier Pins sind Variablen einer Optimierung (analytische Startlösung + Simulated Annealing auf einer Routing-Schätzung, die mit dem Router übereinstimmt). Alle Läufe werden tatsächlich geroutet – die beste Zeichnung gewinnt und wird zum Schluss am fertigen Bild nachoptimiert (jede Änderung echt geroutet, nur Verbesserungen bleiben). Namen haben keinen Einfluss auf das Layout (nur auf Farben).
 - **Echte 2D-Verdrahtung (kein WireViz 1D-Kabelbaum)**: Orthogonales Grid-Routing (A*) mit Steiner-Bäumen, Rip-up-and-Reroute, automatischer Korridor-Aufweitung, Junction-Dots (`●`) und Netznamen-Labels.
 - **Qualitätsbericht**: Jede Zeichnung wird vermessen (Kreuzungen, Knicke, gerade Verbindungen, Länge, Verstöße, Kosten, Lesbarkeits-Score) – siehe `--report`.
 - **Minimalistisches PoC Web-Interface**: 50/50 Split-Screen (links Editor mit Zeilennummern, rechts 2D-SVG-Vorschau mit Pan & Zoom sowie Live-Fehleranzeige). Kein Header-Bloat, keine Farbverläufe, purer Fokus.
@@ -35,7 +35,7 @@ python3 app.py examples/example_large.txt -o large.svg --light --report --effort
 python3 app.py examples/example_large.txt --json-report qualitaet.json
 ```
 
-`--effort` wählt zwischen `fast` (schnelle Vorschau, Standard der Web-Oberfläche), `balanced` (Standard der CLI) und `thorough` (mehr Läufe, einige Minuten).
+`--effort` wählt zwischen `fast` (schnelle Vorschau, Standard der Web-Oberfläche), `balanced` (Standard der CLI) und `thorough` (mehr Läufe und längere Nachoptimierung, für große Schaltungen einige Minuten – die übersichtlichste Darstellung).
 
 ### 3. Tests ausführen
 ```bash

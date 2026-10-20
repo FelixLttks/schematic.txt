@@ -286,21 +286,67 @@ Linie rückt weiter). Das erhält jede Ausrichtung exakt und kann keine
 
 `restarts` Läufe mit verschiedenen Seeds, parallel in Prozessen (`fork`;
 Ergebnisse in fester Reihenfolge, daher identisch zur sequenziellen
-Ausführung); die `routed_candidates` mit der niedrigsten Schätzung werden
-echt geroutet und mit den Kennzahlen des Berichts bewertet; die günstigste
-Zeichnung gewinnt. Deterministisch: feste Seeds, Eingabereihenfolge statt
-Hash- oder Namensreihenfolge.
+Ausführung); **jeder** Lauf wird echt geroutet und mit den Kennzahlen des
+Berichts bewertet; die günstigste Zeichnung gewinnt. Deterministisch: feste
+Seeds, Eingabereihenfolge statt Hash- oder Namensreihenfolge.
 
-Messung (10 aussagekräftige Fälle × 4 Seeds, Summe der Mittelwerte, gleiche
-Referenzgewichte): Suchaufwand ist der Haupthebel. 150 → 1000 Züge je
-Bauteil: −18 %; 1000 → 2500: nur noch −4 %. Die Streuung zwischen Seeds
-ist groß (±20 %), deshalb mehrere Läufe und der beste gewinnt.
+Warum alle routen: Die Schätzung sagt die geroutete Qualität nur grob
+voraus. Beispiel `03_dense_network`, 12 Läufe: die niedrigste Schätzung
+(338) ergibt geroutet 454, eine Schätzung von 415 ergibt 350. Abweichungen
+entstehen vor allem bei Mehrpunkt-Netzen (Stamm-Modell vs. tatsächlicher
+Steiner-Baum) und bei Bündeln, deren Pin-Reihenfolge an beiden Enden nicht
+zusammenpasst. Routing kostet dagegen nur etwa ein Zehntel eines
+Platzierungslaufs (dense: 0,8 s vs. 11 s).
 
-| Stufe | Läufe | Züge je Bauteil | echt geroutet | Lights (19 Teile) |
+Daraus folgt auch: **viele kürzere Läufe schlagen wenige lange.** Messung
+über alle 19 Eingaben (Summe, gleiche Gewichte, `balanced`-Budget):
+
+| Variante | Kosten | Kreuzungen | Knicke | Zeit |
 |---|---:|---:|---:|---:|
-| `fast` | 2 | 300 | 1 | ~20 s |
-| `balanced` | 6 | 1000 | 3 | ~2 min |
-| `thorough` | 14 | 2500 | 4 | ~10 min |
+| 6 × 1000 Züge, beste 3 geroutet (vorher) | 4191 | 112 | 328 | 173 s |
+| 6 × 1000, alle geroutet | 4147 | 110 | 314 | 184 s |
+| 14 × 700, alle geroutet | 4047 | 102 | 308 | 287 s |
+| **14 × 500, alle geroutet (jetzt)** | **4043** | **102** | **296** | 210 s |
+
+Einzelne Fälle streuen zwischen den Varianten stark (Seed-Lotterie); die
+Summe ist aussagekräftig.
+
+### 4.5 Nachoptimierung am fertigen Bild
+
+Die Schätzung steuert das Annealing, das Ergebnis wird aber an der
+gerouteten Zeichnung gemessen. Deshalb wird der Gewinner zum Schluss
+**gegen die echte Zielfunktion** verbessert (`engine._refine`):
+
+1. Auf der Gewinner-Platzierung werden die Züge des Annealings gezogen
+   (verschieben, ausrichten, anlegen, tauschen, drehen, Seite verschieben,
+   Pin-Seiten umdrehen); die `refine_batch` mit der besten Schätzung je
+   Runde werden **echt geroutet** (parallel) und mit den Berichtskennzahlen
+   bewertet.
+2. Die beste Änderung wird übernommen, wenn die fertige Zeichnung
+   günstiger wird; sonst zählt die Runde als erfolglos. Nach
+   `refine_patience` erfolglosen Runden (oder `refine_rounds`) ist Schluss.
+3. Kandidaten werden *schnell* geroutet: ohne Korridor-Aufweitung und ohne
+   Konflikt-Reparatur. Ein Kandidat mit offenem Pin verliert ohnehin, und
+   wenn alles direkt routet, ist das Ergebnis identisch mit dem vollen
+   Routing. Das halbiert die Zeit (dense: 47 → 29 s), weil einzelne schwer
+   routbare Kandidaten sonst die ganze Runde aufhalten.
+
+Wirkung (Summe über 19 Eingaben):
+
+| Stufe | ohne → mit Nachoptimierung | Kreuzungen | Zeit |
+|---|---:|---:|---:|
+| `fast` | 4962 → 4538 | 131 → 121 | 42 → 55 s |
+| `balanced` | 4043 → 3808 | 102 → 90 | 210 → 299 s |
+
+| Stufe | Läufe | Züge je Bauteil | Nachoptimierung (Runden / je Runde / Geduld) | Lights (19 Teile) |
+|---|---:|---:|---:|---:|
+| `fast` | 2 | 300 | 4 / 7 / 1 | ~20 s |
+| `balanced` | 14 | 500 | 15 / 14 / 3 | ~2 min |
+| `thorough` | 28 | 1500 | 60 / 14 / 6 | ~9 min |
+
+`thorough` lohnt sich bei dichten Schaltungen deutlich (gegenüber
+`balanced`): `03_dense_network` 286 → 240, `13_functional_regions`
+281 → 216, `example_large` 689 → 599, `example_lights` 1015 → 880.
 
 ---
 
@@ -319,37 +365,36 @@ Lesbarkeits-Score 0–100 (nur für Menschen).
 
 ## 6. Ergebnisse
 
-Alle 20 Eingaben (Beispiele + Testfälle), alte Engine (`custom_components`,
-Commit `fd67b2c`) gegen neue Engine (`balanced`), **beide mit denselben
-Metriken bewertet** (`tools/layout_report.py --baseline custom_components
---effort balanced`):
+Alle 20 Eingaben (Beispiele + Testfälle), alte Engine (Commit `fd67b2c`)
+gegen neue Engine (`balanced`), **beide mit denselben Metriken bewertet**
+(`tools/layout_report.py --baseline fd67b2c --effort balanced`):
 
 | Fall | Kosten alt → neu | Kreuzungen | Knicke | Zeit (s) |
 |---|---:|---:|---:|---:|
-| example_lights | 1358 → 761 | 68 → 28 | 80 → 67 | 19 → 100 |
-| example_large | 765 → 717 | 38 → 31 | 46 → 56 | 10 → 67 |
-| esp32_sd_spi | 209 → 81 | 8 → 0 | 14 → 13 | 1 → 6 |
-| esp32_sensors_bus | 277 → 206 | 12 → 7 | 20 → 19 | 2 → 8 |
-| 05_i2c_bus | 294 → 208 | 16 → 9 | 24 → 29 | 5 → 16 |
-| 02_branching | 39 → 27 | 0 → 0 | 5 → 4 | 0,3 → 3 |
-| 06_differential_pairs | 81 → 63 | 2 → 0 | 8 → 11 | 0,2 → 6 |
-| 12_labels_annotations | 78 → 61 | 2 → 0 | 11 → 15 | 0,5 → 8 |
-| 03_dense_network | 224 → 383 | 8 → 11 | 23 → 43 | 2 → 23 |
-| 13_functional_regions | 265 → 294 | 12 → 11 | 21 → 24 | 3 → 29 |
-| 07_crossing_prone | 192 → 228 | 6 → 9 | 20 → 21 | 0,6 → 6 |
-| **Summe aller 20** | | **252 → 143** | 395 → 425 | 64 → 401 |
+| example_lights | 1790 → 1015 | 68 → 26 | 80 → 66 | 18 → 131 |
+| example_large | 1115 → 689 | 38 → 18 | 46 → 52 | 9 → 62 |
+| esp32_sd_spi | 289 → 95 | 8 → 0 | 14 → 10 | 1 → 5 |
+| esp32_sensors_bus | 356 → 195 | 12 → 12 | 20 → 0 | 2 → 8 |
+| esp32_custom_part | 218 → 182 | 3 → 4 | 11 → 12 | 1 → 6 |
+| 05_i2c_bus | 491 → 210 | 16 → 7 | 24 → 17 | 5 → 18 |
+| 03_dense_network | 343 → 286 | 8 → 4 | 23 → 30 | 2 → 32 |
+| 13_functional_regions | 379 → 281 | 12 → 4 | 21 → 30 | 3 → 31 |
+| 10_long_distance | 153 → 70 | 3 → 0 | 12 → 8 | 0,4 → 8 |
+| 07_crossing_prone | 313 → 286 | 6 → 7 | 20 → 19 | 0,6 → 6 |
+| **Summe aller 20** | **7852 → 4823** | **252 → 116** | 395 → 353 | 60 → 537 |
 
-* Kreuzungen insgesamt −43 %, im Lights-Beispiel −59 %; Kosten besser in
-  15 von 20 Fällen; keine Verstöße (wie vorher).
-* **Schlechter** in 5 Fällen, deutlich nur in `03_dense_network`: Dort
-  findet die Suche eine nach den *eigenen* Metriken bessere Anordnung (die
-  der alten Engine) nicht. Das ist ein Suchproblem, kein Modellproblem; mit
-  `thorough` lag derselbe Fall bei 297.
-* **Laufzeit** ist 5–10× höher. Das ist der Preis dafür, dass jede
+* Kosten **besser in allen 20 Fällen** (−39 % in Summe), Kreuzungen −54 %,
+  keine Verstöße (wie vorher).
+* Die früheren Rückschritte sind behoben: `03_dense_network` (vorher
+  454 / 13 Kreuzungen, jetzt 286 / 4) und `esp32_custom_part` (vorher
+  226 / 23 Knicke, jetzt 182 / 12). Ursache war die Auswahl nach Schätzung,
+  nicht das Modell (siehe 4.4 und 4.5).
+* Einzelne Kennzahlen können trotzdem schlechter sein (z. B. mehr Knicke
+  bei weniger Kreuzungen): die Kosten wägen sie gegeneinander ab.
+* **Laufzeit** ist ~9× höher. Das ist der Preis dafür, dass jede
   Entscheidung gegen die echte Zielfunktion geprüft wird.
 * **Streuung**: einzelne Läufe desselben Falls unterscheiden sich um
-  ±15–20 % in den Kosten (z. B. example_large 579 / 614 / 717 in drei
-  Messungen mit kleinen Codeänderungen dazwischen). Mehr Läufe senken das.
+  ±15–20 % in den Kosten. Mehr (geroutete) Läufe senken das.
 
 ---
 
@@ -370,7 +415,13 @@ Metriken bewertet** (`tools/layout_report.py --baseline custom_components
 ## 8. Grenzen und nächste Schritte
 
 * **Laufzeit.** Reines Python. `fast` braucht für 19 Bauteile etwa 10–20 s,
-  `balanced` 1–2 min. Die Web-Vorschau nutzt standardmäßig `fast`.
+  `balanced` ~2 min, `thorough` ~9 min. Die Web-Vorschau nutzt
+  standardmäßig `fast`.
+* **Schätzung vs. Routing.** Die Schätzung trifft Mehrpunkt-Netze und
+  Bündel mit vertauschter Pin-Reihenfolge schlecht; die Auswahl gleicht das
+  durch echtes Routing aller Läufe und die Nachoptimierung aus. Eine
+  genauere Schätzung würde die Annealing-Suche selbst verbessern und die
+  Nachoptimierung abkürzen.
 * **Suchrauschen.** Annealing ist stochastisch (deterministisch je Seed);
   einzelne Läufe streuen. Mehr Läufe (`thorough`) glätten das.
 * **Feinausrichtung exakt lösen.** Für eine feste grobe Anordnung ist die

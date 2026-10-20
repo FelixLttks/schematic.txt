@@ -509,7 +509,11 @@ class Router:
                 apart += 1
         return near, apart
 
-    def route_all(self, passes: int) -> None:
+    def route_all(self, passes: int, repair: bool = True) -> None:
+        """Routes every net, then rip-up-and-reroute passes.  Without
+        ``repair`` a net that cannot be routed directly stays open (no
+        conflict-driven recovery): a quick verdict for screening, identical
+        to the full result whenever everything routes."""
         self.bundle_of = [-1] * (max((n.index for n in self.nets), default=-1) + 1)
         for n in self.nets:
             self.bundle_of[n.index] = n.bundle
@@ -522,7 +526,7 @@ class Router:
         # the path, the others follow it as a ribbon)
         order = sorted(self.nets, key=lambda n: (lead.get(n.bundle, own[n.index]), own[n.index]))
         for net in order:
-            self.route_net(net)
+            self.route_net(net, recover=1 if repair else 0)
         for _ in range(passes):
             changed = False
             for net in order:
@@ -543,7 +547,7 @@ class Router:
         # Repair: pins still open get the conflict-driven recovery (rip up
         # exactly the nets in the way, route, re-route the victims) until
         # nothing improves.
-        for depth in (1, 2, 2):
+        for depth in ((1, 2, 2) if repair else ()):
             open_nets = [n for n in order if not n.routed]
             if not open_nets:
                 break

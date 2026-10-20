@@ -6,25 +6,30 @@
 2. per connected sub-circuit, ``restarts`` independent placements
    (analytic start + simulated annealing + polish, different seeds, run in
    parallel processes);
-3. the ``routed_candidates`` placements with the lowest estimated cost are
-   routed for real and scored with the same weights; the best drawing wins;
+3. the ``routed_candidates`` placements with the lowest estimated cost (by
+   default all) are routed for real and scored with the same weights; the
+   best drawing wins (the estimate alone picks it poorly, routing is cheap);
 4. sub-circuits are packed side by side, unconnected parts in a row below;
-5. net labels, quality report.
+5. refinement of the winning drawing against the real objective: small
+   placement changes, each routed for real, kept only when the finished
+   drawing gets better;
+6. net labels, quality report.
 """
 
 from __future__ import annotations
 
 import copy
 import os
+import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from schematic.models import Point, Schematic, WireJunction, WireSegment
+from schematic.models import Point, Schematic, Side, WireJunction, WireSegment
 from schematic.layout.config import DEFAULT_CONFIG, LayoutConfig
 from schematic.layout.labels import place_net_labels
 from schematic.layout.metrics import QualityReport, evaluate
 from schematic.layout.netlist import Netlist, build_netlist, merge_shared_pin_nets
-from schematic.layout.placement import Layout, PartModel, place_group
+from schematic.layout.placement import Layout, PartModel, Placer, place_group
 from schematic.layout.router import DX, DY, RNet, RTerminal, Router
 from schematic.layout.shapes import GRID, VEC, Shape, apply_shape
 from schematic.styles import net_color
@@ -46,6 +51,8 @@ class _Placed:
     pos: Dict[str, Pos]
     shape: Dict[str, Shape]
     estimate: float
+    var: Dict[str, int] = field(default_factory=dict)
+    ports: Dict[str, tuple] = field(default_factory=dict)   # free box pins: ((pin, side), ...)
 
 
 def _place_all(sch: Schematic, nl: Netlist, models: Dict[str, PartModel], cfg: LayoutConfig,
@@ -54,6 +61,8 @@ def _place_all(sch: Schematic, nl: Netlist, models: Dict[str, PartModel], cfg: L
     groups = nl.groups(parts)
     pos: Dict[str, Pos] = {}
     shape: Dict[str, Shape] = {}
+    var: Dict[str, int] = {}
+    ports: Dict[str, tuple] = {}
     estimate = 0.0
     x_cursor = 0
     bottom = 0
@@ -69,6 +78,9 @@ def _place_all(sch: Schematic, nl: Netlist, models: Dict[str, PartModel], cfg: L
             x, y = layout.pos[p]
             pos[p] = (x - gx0 + x_cursor, y - gy0)
             shape[p] = layout.shape[p]
+            var[p] = layout.var[p]
+            if models[p].free:
+                ports[p] = layout.ports.get(p, ())
         x_cursor += (gx1 - gx0) + cfg.group_gap
         bottom = max(bottom, gy1 - gy0)
     # Unconnected parts: a row below everything.
@@ -78,15 +90,21 @@ def _place_all(sch: Schematic, nl: Netlist, models: Dict[str, PartModel], cfg: L
         if p in pos:
             continue
         m = models[p]
-        s = m.shape(m.variants[0])
+        # free box pins all on the left (a complete assignment, so the
+        # refinement can treat the part like any other)
+        prt = tuple((pid, Side.LEFT) for pid in m.free) if m.free else None
+        s = m.shape(m.variants[0], prt)
         f = s.footprint
         pos[p] = (x - f[0], y - f[1])
         shape[p] = s
+        var[p] = m.variants[0]
+        if prt is not None:
+            ports[p] = prt
         x += (f[2] - f[0]) + cfg.clearance + 2
-    return _Placed(pos, shape, estimate)
+    return _Placed(pos, shape, estimate, var, ports)
 
 
-def _route(sch: Schematic, nl: Netlist, placed: _Placed, cfg: LayoutConfig) -> Router:
+def _route(sch: Schematic, nl: Netlist, placed: _Placed, cfg: LayoutConfig, repair: bool = True) -> Router:
     feet = []
     for p, (x, y) in placed.pos.items():
         f = placed.shape[p].footprint
@@ -114,7 +132,7 @@ def _route(sch: Schematic, nl: Netlist, placed: _Placed, cfg: LayoutConfig) -> R
             ps = placed.shape[c].pins[pid]
             terms.append(RTerminal(c, pid, x + ps.tx, y + ps.ty, DIR_INDEX[VEC[ps.side]]))
         r.nets.append(RNet(info.index, info.name, info.factor, info.rail, terms, bundle=info.bundle))
-    r.route_all(cfg.reroute_passes)
+    r.route_all(cfg.reroute_passes, repair)
     return r
 
 
@@ -189,10 +207,10 @@ def _spread(placed: _Placed, amount: int) -> None:
 
 
 def _route_widening(sch: Schematic, nl: Netlist, placed: _Placed, cfg: LayoutConfig,
-                    widen: bool = True) -> Router:
+                    widen: bool = True, repair: bool = True) -> Router:
     """Routes; where pins stay unconnected, opens corridors in front of them
     and routes again; finally spreads the whole drawing."""
-    router = _route(sch, nl, placed, cfg)
+    router = _route(sch, nl, placed, cfg, repair)
     for attempt in range(6 if widen else 0):
         if all(n.routed for n in router.nets):
             break
@@ -269,7 +287,7 @@ def layout_schematic(schematic: Schematic, config: Optional[LayoutConfig] = None
     jobs = [(schematic, nl, models, cfg, cfg.seed + r) for r in range(max(1, cfg.restarts))]
     placed_all = _map(_restart_job, jobs, workers)
     placements = sorted(((p, r) for r, p in enumerate(placed_all)), key=lambda e: (e[0].estimate, e[1]))
-    chosen = placements[:max(1, cfg.routed_candidates)]
+    chosen = placements[:cfg.routed_candidates] if cfg.routed_candidates > 0 else placements
     # Route the best placements for real and score the drawings with the
     # same metrics as the final report; the cheapest drawing wins.
     routed = _map(_route_job, [(schematic, nl, p, cfg) for p, _ in chosen], workers)
@@ -280,13 +298,80 @@ def layout_schematic(schematic: Schematic, config: Optional[LayoutConfig] = None
         if best is None or cost < best[0] - 1e-9:
             best = (cost, r, placed)
     assert best is not None
-    _, r, placed = best
+    cost, r, placed = best
+    strategy = f"seed{cfg.seed + r}"
+    if cfg.refine_rounds > 0:
+        cost, placed, kept = _refine(schematic, nl, models, placed, cost, cfg, workers)
+        if kept:
+            strategy += f" + {kept} refinements"
     router = _route_widening(schematic, nl, placed, cfg, widen=False)
     _emit(schematic, nl, placed, router)
     if cfg.net_labels:
         place_net_labels(schematic)
     report = evaluate(schematic, nl, cfg.weights)
-    return LayoutResult(report=report, candidates=tried, strategy=f"seed{cfg.seed + r}")
+    return LayoutResult(report=report, candidates=tried, strategy=strategy)
+
+
+def _refine(schematic: Schematic, nl: Netlist, models: Dict[str, PartModel], placed: _Placed,
+            cost: float, cfg: LayoutConfig, workers: int) -> Tuple[float, _Placed, int]:
+    """Local search on the finished drawing against the real objective.
+
+    The estimate guides the annealing but predicts the routed drawing only
+    roughly, so the winner is improved further with the measure that is
+    reported: per round, the annealing moves (shift, align, attach, swap,
+    rotate, slide, flip pin sides) are sampled on the winning placement,
+    the ``refine_batch`` most promising by estimate are routed for real (in
+    parallel) and the best is kept if the scored drawing gets cheaper.
+    Stops after ``refine_patience`` rounds without improvement.  Returns ``(cost,
+    placement, improvements kept)``."""
+    parts = list(schematic.components)
+    layout = Layout(models, nl, cfg, parts)
+    rng = random.Random(cfg.seed)
+    placer = Placer(layout, rng)
+    kept = 0
+    stale = 0
+
+    def load(p: _Placed) -> None:
+        layout.load((dict(p.pos), dict(p.var), dict(p.ports)))
+
+    load(placed)
+    for _ in range(cfg.refine_rounds):
+        cands: List[Tuple[float, int, _Placed]] = []
+        seen = set()
+        for _ in range(cfg.refine_batch * 4):
+            mv = placer._random_move()
+            if not mv:
+                continue
+            res = layout.apply(mv[0], sides=mv[1])
+            if res is None:
+                continue
+            d, tok = res
+            key = (tuple(sorted(layout.pos.items())), tuple(sorted(layout.var.items())),
+                   tuple(sorted(layout.ports.items())))
+            if key not in seen:
+                seen.add(key)
+                cands.append((d, len(cands), _Placed(dict(layout.pos), dict(layout.shape), layout.total,
+                                                     dict(layout.var), dict(layout.ports))))
+            layout.revert(tok)
+        if not cands:
+            break
+        cands.sort(key=lambda c: (c[0], c[1]))
+        batch = [c[2] for c in cands[:cfg.refine_batch]]
+        # quick verdict (no widening, no repair): a change that leaves a pin
+        # open loses anyway, and one that routes cleanly routes identically
+        routed = _map(_route_job, [(schematic, nl, p, cfg, True) for p in batch], workers)
+        i_best = min(range(len(routed)), key=lambda i: (routed[i][0], i))
+        new_cost, new_placed = routed[i_best]
+        if new_cost < cost - 1e-6:
+            cost, placed = new_cost, new_placed
+            load(placed)
+            kept += 1
+            stale = 0
+        else:
+            stale += 1
+            if stale >= cfg.refine_patience:
+                break
+    return cost, placed, kept
 
 
 def _restart_job(job) -> _Placed:
@@ -298,9 +383,10 @@ def _route_job(job) -> Tuple[float, _Placed]:
     """Routes a placement (opening corridors where needed) and scores the
     drawing with the report metrics; returns the cost and the (possibly
     widened) placement."""
-    schematic, nl, placed, cfg = job
+    schematic, nl, placed, cfg, *quick = job
+    quick = bool(quick and quick[0])
     placed = copy.deepcopy(placed)
-    router = _route_widening(schematic, nl, placed, cfg)
+    router = _route_widening(schematic, nl, placed, cfg, widen=not quick, repair=not quick)
     sch = copy.deepcopy(schematic)
     _emit(sch, nl, placed, router)
     return evaluate(sch, nl, cfg.weights).cost + 1000.0 * sum(1 for n in router.nets if not n.routed), placed

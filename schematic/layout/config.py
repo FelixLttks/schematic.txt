@@ -52,11 +52,14 @@ class LayoutConfig:
     clearance: int = 2              # free grid lines between footprints (min.)
     group_gap: int = 6              # between unconnected sub-circuits
     margin: int = 2                 # empty border (grid)
-    restarts: int = 6               # independent annealing runs (different seeds, run in parallel)
-    moves_per_part: int = 1000      # annealing moves per component and run
+    restarts: int = 14              # independent annealing runs (different seeds, run in parallel)
+    moves_per_part: int = 500       # annealing moves per component and run
     start_temperature: float = 0.3  # x mean uphill step of the start layout
-    routed_candidates: int = 3      # best placements that are routed for real
+    routed_candidates: int = 0      # best placements that are routed for real (0: all)
     reroute_passes: int = 3         # rip-up-and-reroute passes
+    refine_rounds: int = 15         # final local search on the routed drawing (0: off)
+    refine_batch: int = 14          # changes routed for real per refinement round
+    refine_patience: int = 3        # rounds without improvement before it stops
     net_labels: bool = True
     workers: int = 0                # parallel processes for independent runs (0: CPU count - 1)
     seed: int = 1
@@ -65,25 +68,36 @@ class LayoutConfig:
 def config_for_effort(effort: str = "balanced") -> LayoutConfig:
     """Quality / running-time presets.
 
-    Measured on the examples and test cases: the annealing effort is the
-    main lever (150 -> 1000 moves per part: -18 % cost, 1000 -> 2500: -4 %),
-    and the best of several independent runs removes most of the scatter
-    between seeds.  Runs execute in parallel processes.
+    Measured on the examples and test cases: the estimated cost of a
+    placement predicts the routed cost only roughly (the cheapest estimate
+    is often not the cheapest drawing), while routing costs about a tenth
+    of a placement run.  So every run is routed for real, and many shorter
+    runs beat a few long ones (14 x 500 vs. 6 x 1000 moves: -3.5 % total
+    cost, -9 % crossings, same running time).  Runs execute in parallel
+    processes.
 
-    * ``fast``: 2 runs x 300 moves -- live preview;
-    * ``balanced`` (default): 6 runs x 1000 moves, best 3 routed;
-    * ``thorough``: 14 runs x 2500 moves, best 4 routed (minutes).
+    The winner is then refined against the real objective (see
+    ``engine._refine``): every round routes ``refine_batch`` changes for
+    real and keeps the best if the finished drawing gets better (all 19
+    inputs, balanced: -6 % cost, -12 % crossings).
+
+    * ``fast``: 2 runs x 300 moves, short refinement -- live preview;
+    * ``balanced`` (default): 14 runs x 500 moves, up to 15 rounds;
+    * ``thorough``: 28 runs x 1500 moves, up to 60 rounds (minutes).
     """
     cfg = LayoutConfig()
     if effort == "fast":
         cfg.restarts = 2
         cfg.moves_per_part = 300
-        cfg.routed_candidates = 1
+        cfg.refine_rounds = 4
+        cfg.refine_batch = 7
+        cfg.refine_patience = 1
         cfg.reroute_passes = 2
     elif effort == "thorough":
-        cfg.restarts = 14
-        cfg.moves_per_part = 2500
-        cfg.routed_candidates = 4
+        cfg.restarts = 28
+        cfg.moves_per_part = 1500
+        cfg.refine_rounds = 60
+        cfg.refine_patience = 6
         cfg.reroute_passes = 4
     elif effort != "balanced":
         raise ValueError(f"unknown effort level {effort!r}; expected one of {', '.join(EFFORT_LEVELS)}")
