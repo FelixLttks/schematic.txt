@@ -75,17 +75,57 @@ schematic md --check .         # exit 1 if any image is missing or stale
 Running it again only renders blocks that changed, and deletes images that
 are no longer used.
 
-### On GitHub
+### Keeping the images up to date
 
-This repository is also a GitHub Action. To render schematics on every push
-and commit the images:
+Treat the images like a lockfile: render them where you edit, commit them
+with the Markdown, and let CI check that nobody forgot. Locally, the
+[pre-commit](https://pre-commit.com) hook renders on every commit:
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/FelixLttks/schematic.txt
+    rev: main
+    hooks:
+      - id: schematic-md
+```
+
+This repository is also a GitHub Action. In check mode it renders nothing
+and fails if an image is missing or out of date:
 
 ```yaml
 # .github/workflows/schematics.yml
 name: Schematics
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: FelixLttks/schematic.txt@main
+        with:
+          check: "true"
+```
+
+Inputs: `paths` (default `.`), `effort`, `out-dir` (default `schematics`)
+and `check`. Use the same `effort` locally and in CI: it is part of the
+image names.
+
+<details>
+<summary>Rendering in CI instead</summary>
+
+If nobody who edits the Markdown has Python at hand, the action can render
+and a workflow step commits the result. This adds a bot commit after each
+change, so pull before you continue, and it needs a branch the workflow is
+allowed to push to.
+
+```yaml
+name: Schematics
 on:
   push:
+    branches: [main]
     paths: ["**.md"]
+concurrency: schematics  # one run at a time, later pushes wait
 permissions:
   contents: write
 jobs:
@@ -98,23 +138,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add -A -- '*.md' '*.svg'
           git diff --cached --quiet || { git commit -m "docs: render schematics" && git push; }
 ```
 
-Inputs: `paths` (default `.`), `effort`, `out-dir` (default `schematics`)
-and `check` (`"true"` to only verify, e.g. in pull requests).
+Pushes made with the workflow's token do not trigger workflows again, so
+this cannot loop.
 
-To render before committing instead, there is a [pre-commit](https://pre-commit.com)
-hook:
-
-```yaml
-repos:
-  - repo: https://github.com/FelixLttks/schematic.txt
-    rev: main
-    hooks:
-      - id: schematic-md
-```
+</details>
 
 ## Live editor
 
