@@ -1,0 +1,27 @@
+# ESP32 with MicroSD Card SPI Interface and Power Supply
+
+ESP32: ESP32-WROOM-32
+  left: 3V3, EN, GPIO36, GPIO34, GPIO27, GPIO14, GPIO12, GND, GPIO13
+  right: GND, GPIO23(MOSI), GPIO22, GPIO21, GPIO19(MISO), GPIO18(SCK), GPIO5(CS), GPIO2(LED), 5V
+
+SDCard: MicroSD Adapter
+  pins: 3V3, GND, MOSI, MISO, SCK, CS
+
+PowerSupply: AMS1117-3.3V
+  pins: VIN, GND, VOUT
+
+StatusLED: Status Indicator
+  pins: ANODE, CATHODE
+
+# Power distribution
+PowerSupply.VOUT -> ESP32.3V3, SDCard.3V3 : 3V3
+PowerSupply.GND  -> ESP32.GND, SDCard.GND, StatusLED.CATHODE : GND
+
+# SPI Bus
+ESP32.GPIO23 -> SDCard.MOSI : SPI_MOSI
+ESP32.GPIO19 <- SDCard.MISO : SPI_MISO
+ESP32.GPIO18 -> SDCard.SCK  : SPI_SCK
+ESP32.GPIO5  -> SDCard.CS   : SPI_CS
+
+# GPIO LED
+ESP32.GPIO2  -> StatusLED.ANODE : LED_DRIVE

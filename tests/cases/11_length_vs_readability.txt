@@ -1,0 +1,22 @@
+# 11 - Minimum wire length conflicts with readability
+# The sensor and the connector sit on opposite sides of the MCU (fixed pin
+# sides) but are also linked directly by a two-wire bus. The shortest
+# routes would split the pair around both ends of the MCU; a readable
+# drawing keeps both wires together on one side.
+
+MCU: nRF52840
+  left: P0.02(ADC), P0.03(INT), P0.04
+  right: P0.05(TX), P0.06(RX), P0.07
+
+Sensor: Load Cell Amp HX711
+  pins: OUT, INT, DATA_A, DATA_B
+
+Conn: Debug Connector
+  pins: RX, TX, LINK_A, LINK_B
+
+Sensor.OUT -> MCU.P0.02 : ADC_IN
+Sensor.INT -> MCU.P0.03 : SENS_INT
+MCU.P0.05 -> Conn.RX : DBG_TX
+MCU.P0.06 <- Conn.TX : DBG_RX
+Sensor.DATA_A -> Conn.LINK_A : LINK_A
+Sensor.DATA_B -> Conn.LINK_B : LINK_B

@@ -1,0 +1,53 @@
+# Example: Custom Fritzing-Style Graphical Part
+# Defines an ESP32 board using an SVG graphic and grid-aligned pin coordinates.
+
+part ESP32:
+  image: parts/esp32_devkit.svg
+  size: 9x18
+  pins:
+    3V3:    0, 2
+    EN:     0, 3
+    VP:     0, 4
+    VN:     0, 5
+    D34:    0, 6
+    D35:    0, 7
+    D32:    0, 8
+    D33:    0, 9
+    D25:    0, 10
+    D26:    0, 11
+    D27:    0, 12
+    D14:    0, 13
+    D12:    0, 14
+    D13:    0, 15
+    GND:    0, 16
+    VIN:    8, 2
+    GND2:   8, 3
+    D15:    8, 4
+    D2:     8, 5
+    D4:     8, 6
+    RX2:    8, 7
+    TX2:    8, 8
+    D5:     8, 9
+    D18:    8, 10
+    D19:    8, 11
+    D21:    8, 12
+    RX0:    8, 13
+    TX0:    8, 14
+    D22:    8, 15
+    D23:    8, 16
+
+BME280: Temp & Humidity Sensor
+  pins: VIN, GND, SCL, SDA
+
+OLED: 0.96" SSD1306 Display
+  pins: VDD, GND, SCK, SDA
+
+StatusLED: led Blue
+  pins: 1, 2
+
+# Connections
+ESP32.3V3 -> BME280.VIN, OLED.VDD : 3V3
+ESP32.GND -> BME280.GND, OLED.GND, StatusLED.2 : GND
+ESP32.D21 -> BME280.SDA, OLED.SDA : I2C_SDA
+ESP32.D22 -> BME280.SCL, OLED.SCK : I2C_SCL
+ESP32.D2 -> StatusLED.1 : LED_CTRL

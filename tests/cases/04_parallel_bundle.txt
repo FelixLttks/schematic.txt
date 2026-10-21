@@ -1,0 +1,22 @@
+# 04 - Multiple related parallel connections
+# An 8-bit parallel LCD interface plus three control lines between two
+# components. A good drawing is a ribbon of straight parallel wires with
+# the same order at both ends, no internal crossings.
+
+MCU: ATmega328P
+  right: PD0, PD1, PD2, PD3, PD4, PD5, PD6, PD7, PB0, PB1, PB2
+
+LCD: HD44780 Character LCD
+  pins: VSS, VDD, V0, RS, RW, E, D0, D1, D2, D3, D4, D5, D6, D7
+
+MCU.PD0 -> LCD.D0 : DB0
+MCU.PD1 -> LCD.D1 : DB1
+MCU.PD2 -> LCD.D2 : DB2
+MCU.PD3 -> LCD.D3 : DB3
+MCU.PD4 -> LCD.D4 : DB4
+MCU.PD5 -> LCD.D5 : DB5
+MCU.PD6 -> LCD.D6 : DB6
+MCU.PD7 -> LCD.D7 : DB7
+MCU.PB0 -> LCD.RS : LCD_RS
+MCU.PB1 -> LCD.RW : LCD_RW
+MCU.PB2 -> LCD.E : LCD_E

@@ -1,0 +1,20 @@
+# 01 - Simple linear chain
+# A signal passes through four stages in sequence and every net joins
+# exactly two pins. A good drawing is a single left-to-right line of
+# components joined by straight wires: zero bends, zero crossings.
+
+Mic: Electret Microphone
+  pins: OUT, GND
+
+Preamp: MAX4466 Preamp
+  pins: IN, OUT, VCC, GND
+
+Filter: Anti-Alias Filter
+  pins: IN, OUT
+
+ADC: ADS1115 ADC
+  pins: AIN0, SDA, SCL, VDD, GND
+
+Mic.OUT -> Preamp.IN : MIC_SIG
+Preamp.OUT -> Filter.IN : PRE_OUT
+Filter.OUT -> ADC.AIN0 : FILT_OUT

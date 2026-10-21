@@ -1,0 +1,32 @@
+# 10 - Long-distance connections
+# A buck converter power stage with a feedback divider from the output all
+# the way back to the controller, plus an enable line skipping stages. The
+# long nets must be easy to follow and must not cut through other stages.
+
+Input: DC Jack 12V
+  pins: V+, V-
+
+Controller: TPS54331 Buck Controller
+  pins: VIN, EN, BOOT, SW, FB, COMP, GND
+
+L1: inductor 22uH
+  pins: 1, 2
+
+Cout: capacitor 47uF
+  pins: 1, 2
+
+Load: 5V Load
+  pins: VIN, GND, PGOOD
+
+Rtop: resistor 52.3k
+  pins: 1, 2
+
+Rbot: resistor 10k
+  pins: 1, 2
+
+Input.V+ -> Controller.VIN : VIN_12V
+Controller.SW -> L1.1 : SW_NODE
+L1.2 -> Cout.1, Load.VIN, Rtop.1 : VOUT_5V
+Rtop.2 -> Rbot.1, Controller.FB : FB
+Load.PGOOD -> Controller.EN : PGOOD_EN
+Input.V- -> Controller.GND, Cout.2, Load.GND, Rbot.2 : GND

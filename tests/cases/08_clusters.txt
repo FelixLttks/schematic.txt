@@ -1,0 +1,37 @@
+# 08 - Strongly connected clusters
+# A motor-control cluster and a user-interface cluster, each densely
+# connected internally, joined to the MCU by a few signals. A good drawing
+# shows two visually separate groups.
+
+MCU: ESP32-S3
+  pins: IO1, IO2, IO3, IO4, IO5, IO6, IO7, IO8
+
+Driver: DRV8833 Motor Driver
+  pins: AIN1, AIN2, BIN1, BIN2, AOUT1, AOUT2, BOUT1, BOUT2, nFAULT
+
+MotorA: DC Motor A
+  pins: M+, M-
+
+MotorB: DC Motor B
+  pins: M+, M-
+
+Display: ST7789 TFT
+  pins: SCK, MOSI, DC, CS, BL
+
+Encoder: Rotary Encoder
+  pins: A, B, SW
+
+MCU.IO1 -> Driver.AIN1 : M_AIN1
+MCU.IO2 -> Driver.AIN2 : M_AIN2
+MCU.IO3 -> Driver.BIN1 : M_BIN1
+MCU.IO4 -> Driver.BIN2 : M_BIN2
+Driver.nFAULT -> MCU.IO5 : M_FAULT
+Driver.AOUT1 -> MotorA.M+ : MA_P
+Driver.AOUT2 -> MotorA.M- : MA_N
+Driver.BOUT1 -> MotorB.M+ : MB_P
+Driver.BOUT2 -> MotorB.M- : MB_N
+MCU.IO6 -> Display.SCK : UI_SCK
+MCU.IO7 -> Display.MOSI : UI_MOSI
+MCU.IO8 -> Display.DC : UI_DC
+Encoder.A -> Display.CS : UI_CS
+Encoder.B -> Display.BL : UI_BL

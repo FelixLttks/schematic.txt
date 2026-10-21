@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 360" width="180" height="360">
+  <!-- ESP32 DevKit Board Outline -->
+  <rect x="2" y="2" width="176" height="356" rx="8" fill="#181e29" stroke="#334155" stroke-width="2.5" />
+  
+  <!-- PCB Mounting Holes -->
+  <circle cx="12" cy="12" r="4.5" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
+  <circle cx="168" cy="12" r="4.5" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
+  <circle cx="12" cy="348" r="4.5" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
+  <circle cx="168" cy="348" r="4.5" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
+
+  <!-- Micro-USB Connector at Top -->
+  <rect x="65" y="0" width="50" height="28" rx="3" fill="#64748b" stroke="#94a3b8" stroke-width="1.5" />
+  <rect x="73" y="2" width="34" height="18" rx="2" fill="#334155" />
+  <rect x="80" y="8" width="20" height="6" fill="#1e293b" />
+
+  <!-- PCB Antenna Area (Black with Gold Trace) -->
+  <rect x="45" y="38" width="90" height="42" rx="4" fill="#0f172a" stroke="#262f40" stroke-width="1.5" />
+  <path d="M 55,70 L 55,50 L 65,50 L 65,65 L 75,65 L 75,50 L 85,50 L 85,65 L 95,65 L 95,50 L 105,50 L 105,65 L 115,65 L 115,50 L 125,50 L 125,70" 
+        fill="none" stroke="#d97706" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- ESP-WROOM-32 Metal RF Shield -->
+  <rect x="36" y="90" width="108" height="120" rx="4" fill="#cbd5e1" stroke="#94a3b8" stroke-width="2" />
+  <text x="90" y="145" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="#334155" text-anchor="middle" letter-spacing="1.5">ESP-WROOM-32</text>
+  <text x="90" y="165" font-family="system-ui, sans-serif" font-size="9" font-weight="600" fill="#64748b" text-anchor="middle">Wi-Fi + BLE MCU</text>
+  <circle cx="48" cy="102" r="2.5" fill="#94a3b8" />
+
+  <!-- CP2102 / CH340 USB-UART IC -->
+  <rect x="72" y="235" width="36" height="36" rx="2" fill="#1e293b" stroke="#475569" stroke-width="1.5" />
+  <circle cx="78" cy="241" r="1.5" fill="#94a3b8" />
+  <text x="90" y="256" font-family="monospace" font-size="7" font-weight="600" fill="#94a3b8" text-anchor="middle">CP2102</text>
+
+  <!-- Push Buttons (EN / BOOT) -->
+  <!-- EN Button (Left) -->
+  <rect x="25" y="295" width="22" height="22" rx="3" fill="#334155" stroke="#64748b" stroke-width="1.5" />
+  <circle cx="36" cy="306" r="6" fill="#e2e8f0" />
+  <text x="36" y="327" font-family="system-ui, sans-serif" font-size="7" font-weight="700" fill="#94a3b8" text-anchor="middle">EN</text>
+
+  <!-- BOOT Button (Right) -->
+  <rect x="133" y="295" width="22" height="22" rx="3" fill="#334155" stroke="#64748b" stroke-width="1.5" />
+  <circle cx="144" cy="306" r="6" fill="#e2e8f0" />
+  <text x="144" y="327" font-family="system-ui, sans-serif" font-size="7" font-weight="700" fill="#94a3b8" text-anchor="middle">BOOT</text>
+
+  <!-- LEDs -->
+  <rect x="68" y="298" width="8" height="12" rx="1" fill="#334155" />
+  <circle cx="72" cy="304" r="3" fill="#ef4444" opacity="0.9" />
+  <rect x="104" y="298" width="8" height="12" rx="1" fill="#334155" />
+  <circle cx="108" cy="304" r="3" fill="#3b82f6" opacity="0.9" />
+
+  <!-- Silkscreen Header Labels -->
+  <text x="90" y="28" font-family="system-ui, sans-serif" font-size="9" font-weight="700" fill="#f8fafc" text-anchor="middle">NodeMCU ESP32</text>
+
+  <!-- Left Header Pin Pads (Cols x=0 to 180, 15 pins starting from y=40 to 320 at 20px step) -->
+  <!-- Pad rings aligned with 20px grid at x=0 (left) and x=160 (col 8) -->
+  <g fill="#0f172a" stroke="#d97706" stroke-width="1.5">
+    <!-- Left pins: col 0 (x=0) -->
+    <circle cx="0" cy="40" r="4.5" />
+    <circle cx="0" cy="60" r="4.5" />
+    <circle cx="0" cy="80" r="4.5" />
+    <circle cx="0" cy="100" r="4.5" />
+    <circle cx="0" cy="120" r="4.5" />
+    <circle cx="0" cy="140" r="4.5" />
+    <circle cx="0" cy="160" r="4.5" />
+    <circle cx="0" cy="180" r="4.5" />
+    <circle cx="0" cy="200" r="4.5" />
+    <circle cx="0" cy="220" r="4.5" />
+    <circle cx="0" cy="240" r="4.5" />
+    <circle cx="0" cy="260" r="4.5" />
+    <circle cx="0" cy="280" r="4.5" />
+    <circle cx="0" cy="300" r="4.5" />
+    <circle cx="0" cy="320" r="4.5" />
+
+    <!-- Right pins: col 8 (x=160) -->
+    <circle cx="160" cy="40" r="4.5" />
+    <circle cx="160" cy="60" r="4.5" />
+    <circle cx="160" cy="80" r="4.5" />
+    <circle cx="160" cy="100" r="4.5" />
+    <circle cx="160" cy="120" r="4.5" />
+    <circle cx="160" cy="140" r="4.5" />
+    <circle cx="160" cy="160" r="4.5" />
+    <circle cx="160" cy="180" r="4.5" />
+    <circle cx="160" cy="200" r="4.5" />
+    <circle cx="160" cy="220" r="4.5" />
+    <circle cx="160" cy="240" r="4.5" />
+    <circle cx="160" cy="260" r="4.5" />
+    <circle cx="160" cy="280" r="4.5" />
+    <circle cx="160" cy="300" r="4.5" />
+    <circle cx="160" cy="320" r="4.5" />
+  </g>
+</svg>

@@ -1,0 +1,40 @@
+# 03 - Dense multi-component network
+# A flight-controller style MCU with six peripherals, shared buses,
+# interrupts and a common supply. Stresses crossing reduction, grouping
+# and whitespace in a crowded drawing.
+
+MCU: STM32F411 MCU
+  pins: 3V3, GND, PA2(TX), PA3(RX), PB6(SCL), PB7(SDA), PA5(SCK), PA6(MISO), PA7(MOSI), PA4(CS), PB0(INT1), PB1(INT2), PA8(PWM), PA9(PPS)
+
+IMU: BMI270 IMU
+  pins: VDD, GND, SCL, SDA, INT1
+
+Baro: BMP388 Barometer
+  pins: VDD, GND, SCL, SDA, INT
+
+Flash: W25Q128 Flash
+  pins: VCC, GND, CLK, DO, DI, CS
+
+GPS: u-blox M10 GPS
+  pins: VCC, GND, TXD, RXD, PPS
+
+ESC: Motor ESC
+  pins: PWM, GND
+
+LDO: AP2112 3.3V LDO
+  pins: VIN, VOUT, GND
+
+LDO.VOUT -> MCU.3V3, IMU.VDD, Baro.VDD, Flash.VCC, GPS.VCC : 3V3
+LDO.GND -> MCU.GND, IMU.GND, Baro.GND, Flash.GND, GPS.GND, ESC.GND : GND
+MCU.PB6 -> IMU.SCL, Baro.SCL : I2C_SCL
+MCU.PB7 -> IMU.SDA, Baro.SDA : I2C_SDA
+MCU.PA5 -> Flash.CLK : SPI_SCK
+MCU.PA6 <- Flash.DO : SPI_MISO
+MCU.PA7 -> Flash.DI : SPI_MOSI
+MCU.PA4 -> Flash.CS : SPI_CS
+MCU.PA2 -> GPS.RXD : GPS_TX
+MCU.PA3 <- GPS.TXD : GPS_RX
+GPS.PPS -> MCU.PA9 : GPS_PPS
+IMU.INT1 -> MCU.PB0 : IMU_INT
+Baro.INT -> MCU.PB1 : BARO_INT
+MCU.PA8 -> ESC.PWM : MOTOR_PWM

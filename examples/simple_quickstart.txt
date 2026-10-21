@@ -1,0 +1,7 @@
+# Quickstart: 3 components without pre-declaring pins
+# All components and pins are automatically inferred!
+
+ESP32.GND -> Sensor.GND, Display.GND
+ESP32.3V3 -> Sensor.VCC, Display.VCC
+ESP32.GPIO21(SDA) -> Sensor.SDA, Display.SDA : I2C_SDA
+ESP32.GPIO22(SCL) -> Sensor.SCL, Display.SCL : I2C_SCL

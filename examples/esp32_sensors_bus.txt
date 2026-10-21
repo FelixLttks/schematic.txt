@@ -1,0 +1,27 @@
+# ESP32 with I2C Sensor Bus and OLED Display
+# Shows bus topology with shared lines and branch junction dots
+
+ESP32: ESP32-WROOM-32
+  pins: 3V3, GND, GPIO21(SDA), GPIO22(SCL), GPIO4(INT)
+
+BME280: Temp & Humidity Sensor
+  pins: VIN, GND, SCL, SDA
+
+OLED: 0.96" SSD1306
+  pins: VDD, GND, SCK, SDA
+
+MPU6050: 6-Axis IMU
+  pins: VCC, GND, SCL, SDA, INT
+
+# Power Rail (3.3V)
+ESP32.3V3 -> BME280.VIN, OLED.VDD, MPU6050.VCC : 3V3
+
+# Ground Rail
+ESP32.GND -> BME280.GND, OLED.GND, MPU6050.GND : GND
+
+# I2C Bus (SDA & SCL)
+ESP32.GPIO21 -> BME280.SDA, OLED.SDA, MPU6050.SDA : I2C_SDA
+ESP32.GPIO22 -> BME280.SCL, OLED.SCK, MPU6050.SCL : I2C_SCL
+
+# Dedicated Interrupt line
+ESP32.GPIO4 -> MPU6050.INT : SENSOR_INT
