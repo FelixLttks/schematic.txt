@@ -58,3 +58,8 @@ def test_md_check_fails_until_rendered(tmp_path, capsys):
     assert "out of date" in capsys.readouterr().err
     assert main(["md", str(tmp_path), "--effort", "fast"]) == 0
     assert main(["md", str(tmp_path), "--check", "--effort", "fast"]) == 0
+
+
+def test_serve_rejects_other_file_types(tmp_path, capsys):
+    assert main(["serve", str(tmp_path / "board.svg"), "--no-browser"]) == 1
+    assert "expected a .txt or .md file" in capsys.readouterr().err

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Schematic.txt</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="workspace">
+    <!-- Left Panel: Text Editor -->
+    <section class="editor-pane">
+      <div class="pane-bar">
+        <span class="pane-title">schematic.txt</span>
+        <div class="bar-actions">
+          <select id="doc-select" aria-label="Schematic being edited"></select>
+          <button id="btn-part-builder" title="Create Custom Part with Image & Grid Pins">+ Part Builder</button>
+          <button id="btn-compile" title="Render (Ctrl+Enter)">Render</button>
+        </div>
+      </div>
+      <div class="editor-container">
+        <div id="line-numbers" class="line-numbers">1</div>
+        <textarea id="code-input" spellcheck="false" placeholder="MCU.GND -> Sensor.GND"></textarea>
+      </div>
+      <div class="pane-footer">
+        <span id="status-indicator" class="status ok">Ready</span>
+        <span class="shortcut-hint">Ctrl+Enter to render</span>
+      </div>
+    </section>
+
+    <!-- Resizer Divider -->
+    <div id="drag-divider" class="divider"></div>
+
+    <!-- Right Panel: Schematic Visualization / Error -->
+    <section class="preview-pane">
+      <div class="pane-bar">
+        <span class="pane-title">2D Schematic View</span>
+        <div class="bar-actions">
+          <select id="effort-select" title="Layout effort: quality vs. speed" aria-label="Layout effort">
+            <option value="fast" selected>Fast layout</option>
+            <option value="balanced">Balanced layout</option>
+            <option value="thorough">Thorough layout</option>
+          </select>
+          <button id="btn-theme" title="Toggle Theme">Theme</button>
+          <button id="btn-reset-zoom" title="Reset View">Reset</button>
+          <button id="btn-download" title="Export SVG">Export SVG</button>
+          <button id="btn-download-png" title="Export PNG (High-Res with Images)">Export PNG</button>
+        </div>
+      </div>
+      <div id="render-progress-bar" class="render-progress-bar hidden"></div>
+      <div id="canvas-wrapper" class="canvas-wrapper">
+        <div id="error-box" class="error-box hidden">
+          <div class="error-title">Syntax / Layout Error</div>
+          <div id="error-message" class="error-message"></div>
+          <div id="error-line-info" class="error-line-info"></div>
+        </div>
+        <div id="svg-viewport" class="svg-viewport">
+          <div class="empty-state">Loading schematic...</div>
+        </div>
+      </div>
+      <div class="pane-footer preview-footer">
+        <span id="canvas-info">Scroll to zoom &middot; Drag to pan</span>
+      </div>
+    </section>
+  </div>
+
+  <!-- Custom Part Builder Modal -->
+  <div id="part-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3>Part Builder &amp; Grid Alignment</h3>
+          <p class="modal-subtitle">Upload an image, align it to the 20px grid, and click to place pins.</p>
+        </div>
+        <button id="btn-close-modal" class="btn-icon" title="Close">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Controls Column -->
+        <div class="modal-controls">
+          <div class="control-group">
+            <label for="part-name-input">Part Name</label>
+            <input type="text" id="part-name-input" value="ESP32" placeholder="e.g. ESP32, Pico, Sensor" />
+          </div>
+
+          <div class="control-group">
+            <label for="part-file-input">Upload Part Graphic (SVG / PNG / JPG)</label>
+            <input type="file" id="part-file-input" accept=".svg,.png,.jpg,.jpeg,.webp" />
+          </div>
+
+          <div class="control-row">
+            <div class="control-group half">
+              <label for="part-width-input">Grid Width (cols)</label>
+              <input type="number" id="part-width-input" value="9" min="2" max="60" />
+            </div>
+            <div class="control-group half">
+              <label for="part-height-input">Grid Height (rows)</label>
+              <input type="number" id="part-height-input" value="18" min="2" max="100" />
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label>Image Bounds (Direct Drag &amp; Scale)</label>
+            <div class="control-row">
+              <div class="control-group half">
+                <span class="sub-label">Pos X (px)</span>
+                <input type="number" id="img-pos-x" value="0" />
+              </div>
+              <div class="control-group half">
+                <span class="sub-label">Pos Y (px)</span>
+                <input type="number" id="img-pos-y" value="0" />
+              </div>
+            </div>
+            <div class="control-row">
+              <div class="control-group half">
+                <span class="sub-label">Width (px)</span>
+                <input type="number" id="img-width" value="180" min="10" />
+              </div>
+              <div class="control-group half">
+                <span class="sub-label">Height (px)</span>
+                <input type="number" id="img-height" value="360" min="10" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="btn-fit-grid" class="btn-subtle" type="button" title="Fill grid size">Reset to Grid</button>
+              <button id="btn-center-image" class="btn-subtle" type="button" title="Center image on grid">Center</button>
+            </div>
+            <span class="hint-text">Tip: Drag the image rectangle on the right to move. Drag the 8 handles to stretch X and Y independently!</span>
+          </div>
+
+          <div class="control-group pins-section">
+            <div class="section-header">
+              <label>Configured Pins (<span id="pin-count">0</span>)</label>
+              <span class="hint">Click grid point to add/remove</span>
+            </div>
+            <div id="pins-list" class="pins-list">
+              <!-- Dynamically populated pin chips -->
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button id="btn-insert-part" class="btn-primary-action">Insert into Schematic</button>
+          </div>
+        </div>
+
+        <!-- Interactive Canvas Column -->
+        <div class="modal-canvas-column">
+          <div class="canvas-bar">
+            <span>20px Grid Overlay &middot; Click grid intersection to place pin</span>
+            <div class="canvas-zoom-controls">
+              <button id="btn-part-zoom-out" class="btn-canvas-tool" title="Zoom Out">&minus;</button>
+              <span id="part-zoom-val" class="zoom-val">200%</span>
+              <button id="btn-part-zoom-in" class="btn-canvas-tool" title="Zoom In">&plus;</button>
+              <button id="btn-part-zoom-reset" class="btn-canvas-tool" title="Reset Zoom">Fit</button>
+            </div>
+            <span id="canvas-cursor-pos" class="cursor-pos">x: -, y: -</span>
+          </div>
+          <div id="part-canvas-wrapper" class="part-canvas-wrapper">
+            <div id="part-canvas-inner" class="part-canvas-inner">
+              <img id="part-image-preview" class="part-image-preview" alt="Part Graphic" />
+              <svg id="part-grid-svg" class="part-grid-svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+                <!-- SVG dynamically populated with grid, image, and pin targets -->
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

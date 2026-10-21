@@ -1,4 +1,4 @@
-"""Command-line interface: ``schematic render | md``."""
+"""Command-line interface: ``schematic render | md | serve``."""
 
 from __future__ import annotations
 
@@ -59,6 +59,17 @@ def _parser() -> argparse.ArgumentParser:
     md.add_argument("--watch", action="store_true", help="keep running and re-render on every change")
     md.set_defaults(run=_markdown)
 
+    serve = commands.add_parser(
+        "serve",
+        help="open the live editor in the browser",
+        description="Live editor with preview. Given a .txt or .md file, it edits that file: "
+        "changes in the browser are saved, changes on disk show up in the browser.",
+    )
+    serve.add_argument("file", nargs="?", type=Path, help="schematic (.txt) or Markdown (.md) file to edit")
+    serve.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
+    serve.add_argument("-p", "--port", type=int, default=8000, help="port (default: 8000, or the next free)")
+    serve.add_argument("--no-browser", action="store_true", help="do not open a browser window")
+    serve.set_defaults(run=_serve)
     return parser
 
 
@@ -148,6 +159,14 @@ def _watch(args: argparse.Namespace) -> int:
             stamps.update({f: f.stat().st_mtime_ns for f in changed if f.exists()})
         seen = stamps
         time.sleep(0.5)
+
+
+def _serve(args: argparse.Namespace) -> int:
+    from schematic_txt.server import serve
+
+    if args.file is not None and args.file.suffix.lower() not in (".txt", ".md"):
+        return _fail(f"{args.file}: expected a .txt or .md file")
+    return serve(args.file, host=args.host, port=args.port, open_browser=not args.no_browser)
 
 
 def _fail(message: str) -> int:
