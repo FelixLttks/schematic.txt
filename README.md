@@ -208,8 +208,178 @@ MCU.3V3 -> R1.2
 ```
 
 The full reference, including pin sides, YAML input and parts drawn from
-images, is in [docs/syntax.md](docs/syntax.md). More inputs are in
-[examples/](examples/).
+images, is in [docs/syntax.md](docs/syntax.md).
+
+## Examples
+
+The inputs are also in [examples/](examples/).
+
+### Quickstart
+
+No declarations: parts and pins come from the connections.
+
+<!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-45b3cfd64f.dark.svg">
+  <img alt="Schematic" src="schematics/README-45b3cfd64f.svg">
+</picture>
+
+<details>
+<summary>Schematic source</summary>
+
+```schematic
+ESP32.GND -> Sensor.GND, Display.GND
+ESP32.3V3 -> Sensor.VCC, Display.VCC
+ESP32.GPIO21(SDA) -> Sensor.SDA, Display.SDA : I2C_SDA
+ESP32.GPIO22(SCL) -> Sensor.SCL, Display.SCL : I2C_SCL
+```
+
+</details>
+
+### I2C sensor bus
+
+Shared power and bus lines to three devices, drawn as trunks with
+junctions.
+
+<!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-61b4df0385.dark.svg">
+  <img alt="Schematic" src="schematics/README-61b4df0385.svg">
+</picture>
+
+<details>
+<summary>Schematic source</summary>
+
+```schematic
+ESP32: ESP32-WROOM-32
+  pins: 3V3, GND, GPIO21(SDA), GPIO22(SCL), GPIO4(INT)
+
+BME280: Temp & Humidity Sensor
+  pins: VIN, GND, SCL, SDA
+
+OLED: 0.96" SSD1306
+  pins: VDD, GND, SCK, SDA
+
+MPU6050: 6-Axis IMU
+  pins: VCC, GND, SCL, SDA, INT
+
+ESP32.3V3 -> BME280.VIN, OLED.VDD, MPU6050.VCC : 3V3
+ESP32.GND -> BME280.GND, OLED.GND, MPU6050.GND : GND
+ESP32.GPIO21 -> BME280.SDA, OLED.SDA, MPU6050.SDA : I2C_SDA
+ESP32.GPIO22 -> BME280.SCL, OLED.SCK, MPU6050.SCL : I2C_SCL
+ESP32.GPIO4 -> MPU6050.INT : SENSOR_INT
+```
+
+</details>
+
+### SD card over SPI
+
+Pins assigned to the left and right side of a part, and a regulator
+feeding the board.
+
+<!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-66ca01d977.dark.svg">
+  <img alt="Schematic" src="schematics/README-66ca01d977.svg">
+</picture>
+
+<details>
+<summary>Schematic source</summary>
+
+```schematic
+ESP32: ESP32-WROOM-32
+  left: 3V3, EN, GPIO36, GPIO34, GPIO27, GPIO14, GPIO12, GND, GPIO13
+  right: GND, GPIO23(MOSI), GPIO22, GPIO21, GPIO19(MISO), GPIO18(SCK), GPIO5(CS), GPIO2(LED), 5V
+
+SDCard: MicroSD Adapter
+  pins: 3V3, GND, MOSI, MISO, SCK, CS
+
+PowerSupply: AMS1117-3.3V
+  pins: VIN, GND, VOUT
+
+StatusLED: Status Indicator
+  pins: ANODE, CATHODE
+
+PowerSupply.VOUT -> ESP32.3V3, SDCard.3V3 : 3V3
+PowerSupply.GND  -> ESP32.GND, SDCard.GND, StatusLED.CATHODE : GND
+
+ESP32.GPIO23 -> SDCard.MOSI : SPI_MOSI
+ESP32.GPIO19 <- SDCard.MISO : SPI_MISO
+ESP32.GPIO18 -> SDCard.SCK  : SPI_SCK
+ESP32.GPIO5  -> SDCard.CS   : SPI_CS
+
+ESP32.GPIO2  -> StatusLED.ANODE : LED_DRIVE
+```
+
+</details>
+
+### Board drawn from an image
+
+An [image part](docs/syntax.md#image-parts): the dev board is a picture
+with its pins placed on a grid.
+
+<!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-acdbb4c6b4.dark.svg">
+  <img alt="Schematic" src="schematics/README-acdbb4c6b4.svg">
+</picture>
+
+<details>
+<summary>Schematic source</summary>
+
+```schematic
+part ESP32:
+  image: examples/parts/esp32_devkit.svg
+  size: 9x18
+  pins:
+    3V3:    0, 2
+    EN:     0, 3
+    VP:     0, 4
+    VN:     0, 5
+    D34:    0, 6
+    D35:    0, 7
+    D32:    0, 8
+    D33:    0, 9
+    D25:    0, 10
+    D26:    0, 11
+    D27:    0, 12
+    D14:    0, 13
+    D12:    0, 14
+    D13:    0, 15
+    GND:    0, 16
+    VIN:    8, 2
+    GND2:   8, 3
+    D15:    8, 4
+    D2:     8, 5
+    D4:     8, 6
+    RX2:    8, 7
+    TX2:    8, 8
+    D5:     8, 9
+    D18:    8, 10
+    D19:    8, 11
+    D21:    8, 12
+    RX0:    8, 13
+    TX0:    8, 14
+    D22:    8, 15
+    D23:    8, 16
+
+BME280: Temp & Humidity Sensor
+  pins: VIN, GND, SCL, SDA
+
+OLED: 0.96" SSD1306 Display
+  pins: VDD, GND, SCK, SDA
+
+StatusLED: led Blue
+  pins: 1, 2
+
+ESP32.3V3 -> BME280.VIN, OLED.VDD : 3V3
+ESP32.GND -> BME280.GND, OLED.GND, StatusLED.2 : GND
+ESP32.D21 -> BME280.SDA, OLED.SDA : I2C_SDA
+ESP32.D22 -> BME280.SCL, OLED.SCK : I2C_SCL
+ESP32.D2 -> StatusLED.1 : LED_CTRL
+```
+
+</details>
 
 ## Development
 
