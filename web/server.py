@@ -32,7 +32,9 @@ def _reload_schematic_package():
     import sys
 
     importlib.invalidate_caches()
-    loaded = [n for n in sys.modules if n == "schematic" or n.startswith("schematic.")]
+    layout = sys.modules.get("schematic.layout")
+    pinned = layout.reload_pinned() if layout is not None and hasattr(layout, "reload_pinned") else set()
+    loaded = [n for n in sys.modules if (n == "schematic" or n.startswith("schematic.")) and n not in pinned]
     # Children first, so no half-live submodule survives the eviction.
     for name in sorted(loaded, key=lambda n: n.count("."), reverse=True):
         sys.modules.pop(name, None)
@@ -43,7 +45,8 @@ def _reload_schematic_package():
         )
     except BaseException:
         # Never keep a failed import around for the next request.
-        for name in [n for n in sys.modules if n == "schematic" or n.startswith("schematic.")]:
+        for name in [n for n in sys.modules
+                     if (n == "schematic" or n.startswith("schematic.")) and n not in pinned]:
             sys.modules.pop(name, None)
         raise
 

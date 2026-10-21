@@ -35,6 +35,7 @@ Method
 
 from __future__ import annotations
 
+import builtins
 import math
 import random
 from dataclasses import dataclass, field
@@ -84,6 +85,11 @@ class PartModel:
             self.variants = [0]
             self.free = [p.id for p in comp.pins.values() if not p.side_specified]
 
+    def __reduce__(self):
+        # rebuilt from the component in worker processes (a compiled build
+        # cannot pickle its native instances); the shape cache refills itself
+        return (PartModel, (self.comp,))
+
     def _matches(self, shape: Shape) -> bool:
         return all(shape.pins[p.id].side == p.side for p in self.comp.pins.values() if p.side_specified)
 
@@ -126,6 +132,12 @@ class _NetEst:
     hs: List[HSeg] = field(default_factory=list)
     vs: List[VSeg] = field(default_factory=list)
     bbox: Tuple[int, int, int, int] = (0, 0, 0, 0)
+
+
+# CPython's float sum (compensated since 3.12): a compiled build (see
+# tools/build_native.py) would otherwise turn ``sum`` into a plain loop and
+# round differently.
+_pysum = getattr(builtins, "sum")
 
 
 def _mst(points: Sequence[Pt]) -> List[Tuple[int, int]]:
@@ -246,6 +258,7 @@ class Layout:
             if not pts:
                 loose.append(pid)
                 continue
+            assert n is not None                         # no net, no peers
             mx2 = 2.0 * sum(t[0] for t in pts) / len(pts)
             if abs(mx2 - cx2) <= cur.w:
                 # peers above / below: the side where their pins are (the
@@ -394,7 +407,7 @@ class Layout:
                 if c:
                     self.pair[(a, b)] = c
         self._perim = self._perimeter()
-        self.total = sum(e.cost for e in self.est.values()) + sum(self.pair.values()) + self._perim
+        self.total = _pysum(e.cost for e in self.est.values()) + _pysum(self.pair.values()) + self._perim
         return self.total
 
     # --------------------------------------------------------------- moves
@@ -448,7 +461,9 @@ class Layout:
                 self._set_shape(q)
                 touched[q] = None
                 if q not in changes:
-                    f = old_state[q][4].footprint
+                    old_shape = old_state[q][4]
+                    assert old_shape is not None
+                    f = old_shape.footprint
                     x, y = self.pos[q]
                     old_rects.append((x + f[0] - 1, y + f[1] - 1, x + f[2] + 1, y + f[3] + 1))
         if check:
@@ -482,7 +497,8 @@ class Layout:
         delta = 0.0
         for n in affected:
             e = self._net_estimate(n, rects, owner, marks)
-            delta += e.cost - (old_est[n].cost if old_est[n] else 0.0)
+            old_e = old_est[n]
+            delta += e.cost - (old_e.cost if old_e else 0.0)
             self.est[n] = e
         done: Set[Tuple[int, int]] = set()
         for n in affected:
@@ -538,7 +554,7 @@ class Layout:
             else:
                 self.pair.pop(key, None)
         self._perim = token["perim"]
-        self.total = sum(e.cost for e in self.est.values()) + sum(self.pair.values()) + self._perim
+        self.total = _pysum(e.cost for e in self.est.values()) + _pysum(self.pair.values()) + self._perim
 
     def snapshot(self) -> Tuple[Dict[str, Pos], Dict[str, int], Dict[str, Tuple[Tuple[str, Side], ...]]]:
         return dict(self.pos), dict(self.var), dict(self.ports)
@@ -735,7 +751,7 @@ class Placer:
                             continue
                         xs_ = [cen[q][0] for q, _ in nl.nets[n_].terminals if q != p and q in cen]
                         if xs_:
-                            mx_ = sum(xs_) / len(xs_)
+                            mx_ = _pysum(xs_) / len(xs_)
                             guess[p][pid] = -1 if mx_ < cen[p][0] else 1
             if it % 10 == 9:
                 for p in order:
@@ -956,7 +972,7 @@ class Placer:
             L.revert(tok)
             if d > 0:
                 ups.append(d)
-        t0 = self.cfg.start_temperature * ((sum(ups) / len(ups)) if ups else 1.0)
+        t0 = self.cfg.start_temperature * ((_pysum(ups) / len(ups)) if ups else 1.0)
         t_end = 0.01
         best_cost = L.total
         best_snap = L.snapshot()
@@ -1070,12 +1086,12 @@ def construction_order(parts: List[str], nl: Netlist) -> List[str]:
     """Most connected part first, then always the part most strongly wired
     to what is already placed (ties: more pins, then input order)."""
     idx = {p: i for i, p in enumerate(parts)}
-    strength = {p: sum(nl.neighbors[p].get(q, 0.0) for q in parts if q != p) for p in parts}
+    strength = {p: _pysum(nl.neighbors[p].get(q, 0.0) for q in parts if q != p) for p in parts}
     order = [max(parts, key=lambda p: (strength[p], len(nl.part_nets.get(p, [])), -idx[p]))]
     placed = set(order)
     while len(order) < len(parts):
         def key(p: str):
-            s = sum(nl.neighbors[p].get(q, 0.0) for q in placed)
+            s = _pysum(nl.neighbors[p].get(q, 0.0) for q in placed)
             return (s, strength[p], -idx[p])
         nxt = max((p for p in parts if p not in placed), key=key)
         order.append(nxt)

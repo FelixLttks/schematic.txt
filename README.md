@@ -37,6 +37,13 @@ python3 app.py examples/example_large.txt --json-report qualitaet.json
 
 `--effort` wählt zwischen `fast` (schnelle Vorschau, Standard der Web-Oberfläche), `balanced` (Standard der CLI) und `thorough` (mehr Läufe und längere Nachoptimierung, für große Schaltungen einige Minuten – die übersichtlichste Darstellung).
 
+### Optional: schnellere Layout-Engine (kompiliert)
+```bash
+pip install mypy setuptools          # einmalig, für den Python-Interpreter der App
+python3 tools/build_native.py        # kompiliert estimate/placement/router mit mypyc
+```
+Gleiche Zeichnungen (Byte für Byte), etwa 1,5× schneller. Der Build liegt in `schematic/layout/_native/` und wird nur benutzt, solange er zum Quellcode passt – nach einer Änderung an einem der drei Module läuft automatisch wieder reines Python (mit Warnung), bis neu gebaut wird. `SCHEMATIC_PURE_PYTHON=1` erzwingt reines Python, `python3 tools/build_native.py --clean` entfernt den Build.
+
 ### 3. Tests ausführen
 ```bash
 python3 -m unittest discover tests

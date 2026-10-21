@@ -126,6 +126,7 @@ def _shapes_h(a: Pt, s: int, b: Pt, db: Pt, ra: Optional[Rect], rb: Optional[Rec
                 elif lo is not None:
                     ms = [lo, lo + 1]
                 else:
+                    assert hi is not None
                     ms = [hi, hi - 1]
                 for r in near:
                     for m in (r[0] - 1, r[2] + 1):
@@ -135,9 +136,9 @@ def _shapes_h(a: Pt, s: int, b: Pt, db: Pt, ra: Optional[Rect], rb: Optional[Rec
                     out.append([a, (m, ay), (m, by), b])
         elif tier == 4:
             ns = [(ay + by) // 2]
-            for r in (ra, rb) + tuple(near):
-                if r is not None:
-                    ns += [r[1] - 1, r[3] + 1]
+            for ro in (ra, rb) + tuple(near):
+                if ro is not None:
+                    ns += [ro[1] - 1, ro[3] + 1]
             for n in dict.fromkeys(ns):
                 for m1 in (ax + s, ax + 2 * s):
                     for m2 in (bx + t, bx + 2 * t):
@@ -390,6 +391,7 @@ def trunk(points: Sequence[Pt], dirs: Sequence[Pt], rects: Sequence[Rect], bend_
                     y_min = y
                 if y_max is None or y > y_max:
                     y_max = y
+            assert y_min is not None and y_max is not None
             total += y_max - y_min
             scored.append((bend_w * bends + len_w * total + n_junction, x, bends))
         scored.sort(key=lambda e: (e[0], e[1]))

@@ -61,3 +61,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Compiled layout modules (tools/build_native.py)
+schematic/layout/_native/
