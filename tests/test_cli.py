@@ -49,3 +49,12 @@ def test_render_reports_parse_errors(tmp_path, capsys):
 def test_render_missing_file(tmp_path, capsys):
     assert main(["render", str(tmp_path / "nope.txt")]) == 1
     assert "cannot read" in capsys.readouterr().err
+
+
+def test_md_check_fails_until_rendered(tmp_path, capsys):
+    md = tmp_path / "doc.md"
+    md.write_text("```schematic\nA.1 -> B.1\n```\n")
+    assert main(["md", str(tmp_path), "--check", "--effort", "fast"]) == 1
+    assert "out of date" in capsys.readouterr().err
+    assert main(["md", str(tmp_path), "--effort", "fast"]) == 0
+    assert main(["md", str(tmp_path), "--check", "--effort", "fast"]) == 0
