@@ -1,0 +1,36 @@
+name: schematic.txt
+description: Render ```schematic blocks in Markdown files to SVG images
+branding:
+  icon: cpu
+  color: blue
+
+inputs:
+  paths:
+    description: Markdown files or directories to process, separated by spaces
+    default: "."
+  effort:
+    description: Layout effort (fast, balanced, thorough)
+    default: balanced
+  out-dir:
+    description: Image directory, relative to each Markdown file
+    default: schematics
+  check:
+    description: Only check that every image is up to date, and fail if not
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Render schematics
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PATHS: ${{ inputs.paths }}
+        EFFORT: ${{ inputs.effort }}
+        OUT_DIR: ${{ inputs.out-dir }}
+        CHECK: ${{ inputs.check }}
+      run: |
+        args=(--effort "$EFFORT" --out-dir "$OUT_DIR")
+        if [[ "$CHECK" == "true" ]]; then args+=(--check); fi
+        read -ra paths <<< "$PATHS"
+        pipx run --spec "$ACTION_PATH" schematic md "${args[@]}" "${paths[@]}"

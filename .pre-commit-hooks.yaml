@@ -1,0 +1,6 @@
+- id: schematic-md
+  name: render schematic blocks in Markdown
+  description: Renders ```schematic blocks to SVG and shows the image in place of the code
+  entry: schematic md
+  language: python
+  files: \.md$
