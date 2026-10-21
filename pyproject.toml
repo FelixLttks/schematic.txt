@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,6 +7,8 @@ name = "schematic-txt"
 dynamic = ["version"]
 description = "Describe circuits as plain text, get readable schematics as SVG."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 keywords = ["schematic", "circuit", "diagram", "svg", "markdown", "electronics"]
 classifiers = [
@@ -35,7 +37,7 @@ dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
 path = "src/schematic_txt/__init__.py"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["src", "tests", "docs", "examples", "README.md"]
+only-include = ["src", "tests", "docs", "examples", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
