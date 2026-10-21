@@ -85,7 +85,7 @@ with the Markdown, and let CI check that nobody forgot. Locally, the
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FelixLttks/schematic.txt
-    rev: main
+    rev: v0.1.0
     hooks:
       - id: schematic-md
 ```
@@ -102,13 +102,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: FelixLttks/schematic.txt@main
+      - uses: FelixLttks/schematic.txt@v0
         with:
           check: "true"
 ```
 
-Inputs: `paths` (default `.`), `effort`, `out-dir` (default `schematics`)
-and `check`. Use the same `effort` locally and in CI: it is part of the
+`@v0` follows the latest 0.x release; pin a full version such as
+`@v0.1.0` to update only on purpose. Inputs: `paths` (default `.`),
+`effort`, `out-dir` (default `schematics`) and `check`. Use the same `effort` locally and in CI: it is part of the
 image names.
 
 <details>
@@ -133,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: FelixLttks/schematic.txt@main
+      - uses: FelixLttks/schematic.txt@v0
       - name: Commit images
         run: |
           git config user.name "github-actions[bot]"
@@ -231,3 +232,7 @@ uv run scripts/layout_report.py --baseline HEAD
 
 which renders all examples and test cases with both versions and writes a
 report with metrics and images to `build/layout-report/`.
+
+## License
+
+[MIT](LICENSE)
