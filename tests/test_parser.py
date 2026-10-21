@@ -1,5 +1,8 @@
 """Unit tests for the schematic parser."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from schematic_txt.parser import ParseError, parse_schematic
@@ -192,3 +195,13 @@ def test_standard_components_parsing_yaml():
     assert sch.components["SpeedCap"].is_standard
     assert sch.components["SpeedCap"].kind == "capacitor"
     assert sch.components["SpeedCap"].value == "100nF"
+
+
+def _doc_examples():
+    text = (Path(__file__).resolve().parent.parent / "docs" / "syntax.md").read_text(encoding="utf-8")
+    return re.findall(r"^```(?:text|yaml)\n(.*?)^```$", text, flags=re.M | re.S)
+
+
+@pytest.mark.parametrize("example", _doc_examples())
+def test_syntax_doc_examples_parse(example):
+    assert parse_schematic(example).components
