@@ -27,7 +27,7 @@ def _setup(path):
 @pytest.mark.parametrize(
     "path",
     [
-        "tests/cases/14_custom_parts.txt",
+        "examples/esp32_custom_part.txt",
         "tests/cases/05_i2c_bus.txt",
         "tests/cases/03_dense_network.txt",
     ],
@@ -58,7 +58,7 @@ def test_incremental_total_equals_full_recompute(path):
 
 def test_placed_parts_keep_their_clearance():
     for seed in (5, 6):
-        _, cfg, nl, models, parts = _setup("examples/example_large.txt")
+        _, cfg, nl, models, parts = _setup("examples/esp32_sensors_bus.txt")
         cfg.moves_per_part = 60
         layout = place_group(parts, models, nl, cfg, seed)
         for p in parts:

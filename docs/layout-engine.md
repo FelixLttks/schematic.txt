@@ -283,8 +283,7 @@ Effect (sum over 19 inputs):
 | `thorough` | 28 | 1500 | 60 / 14 / 6 | ~9 min |
 
 `thorough` pays off clearly for dense circuits (compared to `balanced`):
-`03_dense_network` 286 → 240, `13_functional_regions` 281 → 216,
-`example_large` 689 → 599.
+`03_dense_network` 286 → 240, `13_functional_regions` 281 → 216.
 
 ## 4. Quality check (`metrics.py`)
 
