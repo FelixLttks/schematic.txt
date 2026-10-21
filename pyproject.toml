@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "schematic-txt"
+dynamic = ["version"]
+description = "Describe circuits as plain text, get readable schematics as SVG."
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["schematic", "circuit", "diagram", "svg", "markdown", "electronics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Topic :: Documentation",
+]
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6"]
+
+[project.scripts]
+schematic = "schematic_txt.cli:main"
+
+[project.urls]
+Repository = "https://github.com/FelixLttks/schematic.txt"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
+
+[tool.hatch.version]
+path = "src/schematic_txt/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests", "docs", "examples", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]
+markers = ["slow: full layout runs over every example (deselect with -m 'not slow')"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "B023",    # closures defined in a loop are called within the same iteration
+    "E741",    # short names like l / I are fine in geometry code
+    "SIM108",  # ternaries are not always clearer
+    "RUF001",  # ambiguous unicode in strings (×, –) is intentional
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/schematic_txt/svg.py" = ["E501"]  # SVG markup reads best one element per line
