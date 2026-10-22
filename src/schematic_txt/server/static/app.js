@@ -605,6 +605,34 @@
     }, { passive: false });
   }
 
+  // Visible canvas area in part coordinates; grows to always contain the grid and the image
+  let partView = { x: -120, y: -120, w: 0, h: 0 };
+
+  function computePartView() {
+    const pad = 120;
+    const minX = Math.min(0, partState.imgX);
+    const minY = Math.min(0, partState.imgY);
+    const maxX = Math.max(partState.width * 20, partState.imgX + partState.imgW);
+    const maxY = Math.max(partState.height * 20, partState.imgY + partState.imgH);
+    const x = Math.floor((minX - pad) / 20) * 20;
+    const y = Math.floor((minY - pad) / 20) * 20;
+    return {
+      x,
+      y,
+      w: Math.ceil((maxX + pad) / 20) * 20 - x,
+      h: Math.ceil((maxY + pad) / 20) * 20 - y
+    };
+  }
+
+  // Pointer position in part coordinates
+  function partPoint(e) {
+    const rect = partGridSvg.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / partCanvasZoom + partView.x,
+      y: (e.clientY - rect.top) / partCanvasZoom + partView.y
+    };
+  }
+
   // Dragging & Scaling State for Image Transform Rectangle
   let isTransforming = false;
   let isPotentialMove = false;
@@ -726,19 +754,8 @@
 
       if (!isTransforming) return;
 
-      const W = partState.width * 20;
-      const H = partState.height * 20;
-      const pad = 120;
-      const totalW = W + pad * 2;
-      const totalH = H + pad * 2;
-
-      const svgRect = partGridSvg.getBoundingClientRect();
-      if (!svgRect.width || !svgRect.height) return;
-
-      const scaleX = totalW / svgRect.width;
-      const scaleY = totalH / svgRect.height;
-      const dx = (e.clientX - startPointerX) * scaleX;
-      const dy = (e.clientY - startPointerY) * scaleY;
+      const dx = (e.clientX - startPointerX) / partCanvasZoom;
+      const dy = (e.clientY - startPointerY) / partCanvasZoom;
 
       if (transformMode === "move") {
         partState.imgX = Math.round(initialImgX + dx);
@@ -759,24 +776,20 @@
         const newH = Math.max(20, Math.round(initialImgH - dy));
         partState.imgY = Math.round(initialImgY + (initialImgH - newH));
         partState.imgH = newH;
-      } else if (transformMode === "se") {
-        partState.imgW = Math.max(20, Math.round(initialImgW + dx));
-        partState.imgH = Math.max(20, Math.round(initialImgH + dy));
-      } else if (transformMode === "sw") {
-        const newW = Math.max(20, Math.round(initialImgW - dx));
-        partState.imgX = Math.round(initialImgX + (initialImgW - newW));
-        partState.imgW = newW;
-        partState.imgH = Math.max(20, Math.round(initialImgH + dy));
-      } else if (transformMode === "ne") {
-        partState.imgW = Math.max(20, Math.round(initialImgW + dx));
-        const newH = Math.max(20, Math.round(initialImgH - dy));
-        partState.imgY = Math.round(initialImgY + (initialImgH - newH));
-        partState.imgH = newH;
-      } else if (transformMode === "nw") {
-        const newW = Math.max(20, Math.round(initialImgW - dx));
-        const newH = Math.max(20, Math.round(initialImgH - dy));
-        partState.imgX = Math.round(initialImgX + (initialImgW - newW));
-        partState.imgY = Math.round(initialImgY + (initialImgH - newH));
+      } else if (transformMode.length === 2) {
+        // Corners scale uniformly, keeping the aspect ratio; the opposite corner stays put
+        const sx = transformMode.includes("e") ? 1 : -1;
+        const sy = transformMode.includes("s") ? 1 : -1;
+        const minScale = Math.max(20 / initialImgW, 20 / initialImgH);
+        const scale = Math.max(
+          minScale,
+          (initialImgW + sx * dx) / initialImgW,
+          (initialImgH + sy * dy) / initialImgH
+        );
+        const newW = Math.round(initialImgW * scale);
+        const newH = Math.round(initialImgH * scale);
+        if (sx < 0) partState.imgX = Math.round(initialImgX + (initialImgW - newW));
+        if (sy < 0) partState.imgY = Math.round(initialImgY + (initialImgH - newH));
         partState.imgW = newW;
         partState.imgH = newH;
       }
@@ -791,10 +804,7 @@
         isPotentialMove = false;
         transformMode = null;
 
-        const pad = 120;
-        const rect = partGridSvg.getBoundingClientRect();
-        const ptX = (e.clientX - rect.left) / partCanvasZoom - pad;
-        const ptY = (e.clientY - rect.top) / partCanvasZoom - pad;
+        const { x: ptX, y: ptY } = partPoint(e);
         const gx = Math.round(ptX / 20);
         const gy = Math.round(ptY / 20);
 
@@ -956,14 +966,14 @@
   function renderPartCanvas() {
     const W = partState.width * 20;
     const H = partState.height * 20;
-    const pad = 120; // Generous 120px workspace padding so nothing is cramped!
-    const totalW = W + pad * 2;
-    const totalH = H + pad * 2;
+    // Keep the view fixed while dragging so the canvas does not shift under the pointer
+    if (!isTransforming) partView = computePartView();
+    const { x: viewX, y: viewY, w: totalW, h: totalH } = partView;
 
     const displayW = Math.round(totalW * partCanvasZoom);
     const displayH = Math.round(totalH * partCanvasZoom);
 
-    partGridSvg.setAttribute("viewBox", `${-pad} ${-pad} ${totalW} ${totalH}`);
+    partGridSvg.setAttribute("viewBox", `${viewX} ${viewY} ${totalW} ${totalH}`);
     partGridSvg.setAttribute("width", `${displayW}`);
     partGridSvg.setAttribute("height", `${displayH}`);
 
@@ -976,8 +986,8 @@
       if (imgSrc) {
         imgEl.src = imgSrc;
         imgEl.style.display = "block";
-        imgEl.style.left = `${Math.round((pad + partState.imgX) * partCanvasZoom)}px`;
-        imgEl.style.top = `${Math.round((pad + partState.imgY) * partCanvasZoom)}px`;
+        imgEl.style.left = `${Math.round((partState.imgX - viewX) * partCanvasZoom)}px`;
+        imgEl.style.top = `${Math.round((partState.imgY - viewY) * partCanvasZoom)}px`;
         imgEl.style.width = `${Math.round(partState.imgW * partCanvasZoom)}px`;
         imgEl.style.height = `${Math.round(partState.imgH * partCanvasZoom)}px`;
       } else {
@@ -988,7 +998,7 @@
     let svgHtml = [];
 
     // Transparent Background rect
-    svgHtml.push(`<rect x="${-pad}" y="${-pad}" width="${totalW}" height="${totalH}" fill="transparent" />`);
+    svgHtml.push(`<rect x="${viewX}" y="${viewY}" width="${totalW}" height="${totalH}" fill="transparent" />`);
 
     // Part image (behind the grid points)
     const ix = partState.imgX;
@@ -1010,13 +1020,13 @@
     }
 
     // Extended Grid Lines across the whole working canvas (subtle clean grid)
-    for (let x = -pad; x <= W + pad; x += 20) {
+    for (let x = viewX; x <= viewX + totalW; x += 20) {
       const isInside = x >= 0 && x <= W;
-      svgHtml.push(`<line x1="${x}" y1="${-pad}" x2="${x}" y2="${H + pad}" stroke="rgba(255, 255, 255, ${isInside ? '0.20' : '0.07'})" stroke-width="1" pointer-events="none" />`);
+      svgHtml.push(`<line x1="${x}" y1="${viewY}" x2="${x}" y2="${viewY + totalH}" stroke="rgba(255, 255, 255, ${isInside ? '0.20' : '0.07'})" stroke-width="1" pointer-events="none" />`);
     }
-    for (let y = -pad; y <= H + pad; y += 20) {
+    for (let y = viewY; y <= viewY + totalH; y += 20) {
       const isInside = y >= 0 && y <= H;
-      svgHtml.push(`<line x1="${-pad}" y1="${y}" x2="${W + pad}" y2="${y}" stroke="rgba(255, 255, 255, ${isInside ? '0.20' : '0.07'})" stroke-width="1" pointer-events="none" />`);
+      svgHtml.push(`<line x1="${viewX}" y1="${y}" x2="${viewX + totalW}" y2="${y}" stroke="rgba(255, 255, 255, ${isInside ? '0.20' : '0.07'})" stroke-width="1" pointer-events="none" />`);
     }
 
     // Component Bounding Box (cyan dashed frame)
@@ -1037,7 +1047,7 @@
       `width="${iw.toFixed(1)}" height="${ih.toFixed(1)}" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="5,3" pointer-events="none" />`
     );
 
-    // 8 Resize Handles (Independent X and Y scaling)
+    // 8 Resize Handles (corners keep the aspect ratio, sides stretch one axis)
     const hw = 10;
     const halfHw = hw / 2;
     const handles = [
@@ -1142,9 +1152,7 @@
     // Grid Hover & Click to Place Pin
     partGridSvg.onmousemove = (e) => {
       if (isTransforming) return;
-      const rect = partGridSvg.getBoundingClientRect();
-      const ptX = (e.clientX - rect.left) / partCanvasZoom - pad;
-      const ptY = (e.clientY - rect.top) / partCanvasZoom - pad;
+      const { x: ptX, y: ptY } = partPoint(e);
       const gx = Math.round(ptX / 20);
       const gy = Math.round(ptY / 20);
 
@@ -1171,9 +1179,7 @@
       if (isTransforming) return;
       if (e.target.closest(".transform-handle") || e.target.closest(".part-grid-pin-circle")) return;
 
-      const rect = partGridSvg.getBoundingClientRect();
-      const ptX = (e.clientX - rect.left) / partCanvasZoom - pad;
-      const ptY = (e.clientY - rect.top) / partCanvasZoom - pad;
+      const { x: ptX, y: ptY } = partPoint(e);
       const gx = Math.round(ptX / 20);
       const gy = Math.round(ptY / 20);
 
