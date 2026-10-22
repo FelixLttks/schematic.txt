@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from schematic_txt import ImageError, layout_schematic, parse_schematic, render, render_svg
+from schematic_txt.models import Side
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
@@ -81,6 +82,28 @@ def test_standard_components_rendering():
         assert f"component-{kind}" in svg
     for text in ("2kOhm", "100nF", "PullUp", "FilterCap"):
         assert text in svg
+
+
+def test_shunt_is_drawn_with_kelvin_taps():
+    text = """
+        Shunt: 7.5mOhm Shunt
+          left: IN, SENSE+
+          right: OUT, SENSE-
+
+        Bat.POS -> Shunt.IN
+        Shunt.OUT -> Load.VCC
+        Shunt.SENSE+ -> Mon.VIN+
+        Shunt.SENSE- -> Mon.VIN-
+        """
+    sch = _laid_out(text)
+    pins = sch.components["Shunt"].pins
+    assert pins["IN"].side == Side.LEFT and pins["OUT"].side == Side.RIGHT
+    assert pins["SENSE+"].side == pins["SENSE-"].side in (Side.TOP, Side.BOTTOM)
+    # each tap sits at the end of its current terminal
+    assert pins["SENSE+"].position.x < pins["SENSE-"].position.x
+    svg = render_svg(sch)
+    assert "component-shunt" in svg
+    assert "7.5mOhm" in svg
 
 
 def test_part_images_are_embedded_from_base_dir():

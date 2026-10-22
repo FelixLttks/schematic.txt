@@ -117,7 +117,7 @@ class Pin:
         return self.name
 
 
-STANDARD_KINDS = {"resistor", "capacitor", "switch", "fuse", "diode", "led", "inductor"}
+STANDARD_KINDS = {"resistor", "capacitor", "switch", "fuse", "diode", "led", "inductor", "shunt"}
 
 KIND_SYNONYMS = {
     "resistor": "resistor",
@@ -141,6 +141,7 @@ KIND_SYNONYMS = {
     "l": "inductor",
     "spule": "inductor",
     "drossel": "inductor",
+    "shunt": "shunt",
 }
 
 

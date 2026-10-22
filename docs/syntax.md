@@ -96,8 +96,8 @@ pins; a connection to `MCU.GND` goes to the first of them.
 
 ## Standard parts
 
-Resistors, capacitors, inductors, diodes, LEDs, fuses and switches are drawn
-as compact symbols instead of boxes. The kind is recognised from the type:
+Resistors, capacitors, inductors, diodes, LEDs, fuses, switches and current
+shunts are drawn as compact symbols instead of boxes. The kind is recognised from the type:
 
 ```text
 R1: resistor 10k
@@ -106,6 +106,8 @@ D1: LED red
 F1: Inline Fuse
 SW1: Slide Switch (SPDT)
   pins: 1, 2, 3
+RS1: 7.5mOhm Shunt
+  pins: IN, OUT, SENSE+, SENSE-
 ```
 
 or set explicitly, with an optional value:
@@ -122,7 +124,11 @@ R3: 4.7k [resistor]
 
 Recognised kinds (and short forms): `resistor` (`res`, `r`), `capacitor`
 (`cap`, `c`), `inductor` (`ind`, `l`), `diode` (`d`), `led`, `fuse`,
-`switch` (`sw`). A switch with three pins is drawn as a changeover switch.
+`switch` (`sw`), `shunt`. A switch with three pins is drawn as a changeover switch.
+A shunt with four pins is drawn as a resistor with Kelvin sense taps: pins
+named `SENSE…`, `S+` / `S-` (otherwise the last two pins) are the taps, and
+`+` / `-` or a declared `left:` / `right:` side puts each tap at the end of
+the matching current terminal.
 For diodes and LEDs, pins named `A` / `anode` / `+` / `1` and `K` /
 `cathode` / `-` / `2` set the direction of the symbol.
 

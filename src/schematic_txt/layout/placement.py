@@ -49,6 +49,8 @@ from schematic_txt.layout.shapes import (
     box_shape,
     classify,
     image_shape,
+    shunt4_shape,
+    shunt_roles,
     switch3_shape,
     symbol2_shape,
 )
@@ -77,6 +79,12 @@ class PartModel:
             self.variants = [0, 1] if comp.rotatable and not declared else [0]
             if declared:
                 self.variants = [r for r in (0, 1) if self._matches(switch3_shape(comp, r))] or [0]
+        elif self.kind == "shunt4":
+            self.variants = [0, 1, 2, 3] if comp.rotatable else [0]
+            if declared:
+                self.variants = [r for r in self.variants if self._shunt_matches(shunt4_shape(comp, r))] or [
+                    0
+                ]
         elif self.kind == "image":
             # quarter turns only: a photo upside down is hard to read
             self.variants = [0, 90, 270] if comp.rotatable else [0]
@@ -92,6 +100,20 @@ class PartModel:
     def _matches(self, shape: Shape) -> bool:
         return all(shape.pins[p.id].side == p.side for p in self.comp.pins.values() if p.side_specified)
 
+    def _shunt_matches(self, shape: Shape) -> bool:
+        """A sense pin declared left / right asks for the tap at that end."""
+        sense = shunt_roles(self.comp)[2:]
+        for p in self.comp.pins.values():
+            if not p.side_specified:
+                continue
+            ps = shape.pins[p.id]
+            if p in sense and p.side in (Side.LEFT, Side.RIGHT):
+                if (ps.tx < shape.w / 2.0) != (p.side == Side.LEFT):
+                    return False
+            elif ps.side != p.side:
+                return False
+        return True
+
     def shape(self, variant: int, ports: tuple[tuple[str, Side], ...] | None = None) -> Shape:
         key = (variant, ports)
         s = self._cache.get(key)
@@ -101,6 +123,8 @@ class PartModel:
             s = symbol2_shape(self.comp, variant)
         elif self.kind == "switch3":
             s = switch3_shape(self.comp, variant)
+        elif self.kind == "shunt4":
+            s = shunt4_shape(self.comp, variant)
         elif self.kind == "image":
             s = image_shape(self.comp, variant)
         else:

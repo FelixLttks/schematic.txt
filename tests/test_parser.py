@@ -144,6 +144,9 @@ def test_standard_components_parsing_dsl():
 
         R4 [kind=resistor, value=100R]:
           pins: 1, 2
+
+        RS1: 7.5mOhm FL-2C Shunt
+          pins: IN, OUT, SENSE+, SENSE-
         """
     sch = parse_schematic(code)
     assert sch.components["R1"].is_standard
@@ -173,6 +176,10 @@ def test_standard_components_parsing_dsl():
     assert sch.components["R4"].is_standard
     assert sch.components["R4"].kind == "resistor"
     assert sch.components["R4"].value == "100R"
+
+    assert sch.components["RS1"].is_standard
+    assert sch.components["RS1"].kind == "shunt"
+    assert sch.components["RS1"].value == "7.5mOhm FL-2C"
 
 
 def test_standard_components_parsing_yaml():

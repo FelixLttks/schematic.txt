@@ -196,7 +196,7 @@ class SvgRenderer:
         def lead(x1: float, x2: float) -> None:
             out.append(f'<line x1="{x1:.1f}" y1="0" x2="{x2:.1f}" y2="0" stroke="{s}" stroke-width="1.8" />')
 
-        if kind == "resistor":
+        if kind in ("resistor", "shunt"):
             lead(-half, -20.0)
             lead(20.0, half)
             out.append(
@@ -262,6 +262,8 @@ class SvgRenderer:
 
         if k == "switch" and len(comp.pins) == 3:
             parts.extend(self._render_spdt(comp))
+        elif k == "shunt" and len(comp.pins) == 4:
+            parts.extend(self._render_shunt(comp))
         else:
             if k in ("diode", "led") and len(comp.pins) == 2:
                 # Direct vector-driven rotation from Anode to Cathode:
@@ -372,6 +374,45 @@ class SvgRenderer:
                 out.append(
                     f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" font-size="8" font-weight="600" fill="{t.value}">{html.escape(p.display_name)}</text>'
                 )
+        return out
+
+    def _render_shunt(self, comp: Component) -> list[str]:
+        """Resistor on the current path, sense taps branching off its ends."""
+        t = self.t
+        s, bg, bs = t.symbol, t.comp_bg, t.box_stroke
+        out: list[str] = []
+        current = sorted(
+            (p for p in comp.pins.values() if p.side in (Side.LEFT, Side.RIGHT)), key=lambda p: p.position.x
+        )
+        sense = [p for p in comp.pins.values() if p.side in (Side.TOP, Side.BOTTOM)]
+        if len(current) != 2 or len(sense) != 2:
+            return out
+        x0, x1 = current[0].position.x, current[1].position.x
+        y = current[0].position.y
+        cx = (x0 + x1) / 2.0
+        out.append(
+            f'<line x1="{x0:.1f}" y1="{y:.1f}" x2="{cx - 20.0:.1f}" y2="{y:.1f}" stroke="{s}" stroke-width="1.8" />'
+        )
+        out.append(
+            f'<line x1="{cx + 20.0:.1f}" y1="{y:.1f}" x2="{x1:.1f}" y2="{y:.1f}" stroke="{s}" stroke-width="1.8" />'
+        )
+        out.append(
+            f'<rect x="{cx - 20.0:.1f}" y="{y - 8.0:.1f}" width="40" height="16" rx="2" ry="2" fill="{bg}" stroke="{bs}" stroke-width="1.8" />'
+        )
+        for p in sense:
+            out.append(
+                f'<line x1="{p.position.x:.1f}" y1="{y:.1f}" x2="{p.position.x:.1f}" y2="{p.position.y:.1f}" stroke="{s}" stroke-width="1.8" />'
+            )
+            out.append(f'<circle cx="{p.position.x:.1f}" cy="{y:.1f}" r="2.4" fill="{s}" />')
+        up = sense[0].position.y < y
+        name_y, val_y = (y + 21.0, y + 32.0) if up else (y - 27.0, y - 14.0)
+        out.append(
+            f'<text x="{cx:.1f}" y="{name_y:.1f}" text-anchor="middle" font-family="{FONT_SANS}" font-size="10" font-weight="700" fill="{t.text_title}">{html.escape(comp.id)}</text>'
+        )
+        if comp.value:
+            out.append(
+                f'<text x="{cx:.1f}" y="{val_y:.1f}" text-anchor="middle" font-family="{FONT_MONO}" font-size="9" font-weight="600" fill="{t.value}">{html.escape(comp.value)}</text>'
+            )
         return out
 
     # ------------------------------------------------------------- IC boxes

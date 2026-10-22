@@ -11,6 +11,8 @@ A component can have several *variants*:
 
 * two-pin symbols (resistor, capacitor, ...): four rotations;
 * three-pin switches: common terminal left or right;
+* four-pin shunts: current terminals left / right, sense taps below or
+  above, either way round;
 * image parts: 0 / 90 / 270 degrees in placement (only 0 unless rotatable;
   180 is supported by the geometry and the renderer but never chosen);
 * boxes: one variant -- their free pins are assigned to sides from geometry
@@ -107,14 +109,20 @@ def switch_kind(comp: Component) -> bool:
     return comp.is_standard and comp.kind == "switch" and len(comp.pins) == 3
 
 
+def shunt_kind(comp: Component) -> bool:
+    return comp.is_standard and comp.kind == "shunt" and len(comp.pins) == 4
+
+
 def classify(comp: Component) -> str:
-    """'symbol2' | 'switch3' | 'image' | 'box'."""
+    """'symbol2' | 'switch3' | 'shunt4' | 'image' | 'box'."""
     if comp.image:
         return "image"
     if two_pin_kind(comp):
         return "symbol2"
     if switch_kind(comp):
         return "switch3"
+    if shunt_kind(comp):
+        return "shunt4"
     return "box"
 
 
@@ -171,6 +179,60 @@ def switch3_shape(comp: Component, rot: int) -> Shape:
     text = [(1.5 - tw / 2.0, -0.9, 1.5 + tw / 2.0, -0.2)]
     if comp.value:
         text.append((1.5 - vw / 2.0, 2.2, 1.5 + vw / 2.0, 2.9))
+    return Shape(w, h, pins, text)
+
+
+def _is_sense(pin: Pin) -> bool:
+    n = pin.name.lower()
+    return n.startswith(("sense", "sns", "kelvin")) or n in ("s+", "s-", "sp", "sn")
+
+
+def shunt_roles(comp: Component) -> tuple[Pin, Pin, Pin, Pin]:
+    """(current a, current b, sense a, sense b) of a four-pin shunt; sense a
+    is tapped at the a end.  Sense pins are found by name (``SENSE+``,
+    ``S-``, ...), otherwise the last two pins are taken."""
+    pins = list(comp.pins.values())
+    sense = [p for p in pins if _is_sense(p)]
+    if len(sense) != 2:
+        sense = pins[2:]
+    ca, cb = (p for p in pins if p not in sense)
+    sa, sb = sense
+    if sa.name.endswith("-") or sb.name.endswith("+") or (
+        # No polarity in the names: a sense pin declared on the side of a
+        # current pin belongs to that end.
+        not (sa.name.endswith("+") or sb.name.endswith("-"))
+        and sb.side_specified
+        and ca.side_specified
+        and sb.side == ca.side != sa.side
+    ):
+        sa, sb = sb, sa
+    return ca, cb, sa, sb
+
+
+def shunt4_shape(comp: Component, rot: int) -> Shape:
+    """Resistor with Kelvin taps.  rot bit 0: current terminal a on the
+    right; bit 1: sense taps above instead of below.  Name and value sit on
+    the side away from the taps."""
+    ca, cb, sa, sb = shunt_roles(comp)
+    mirrored, up = bool(rot & 1), bool(rot & 2)
+    w, h = 5, 3
+    y = 2 if up else 1  # the current path
+    ty = 0 if up else h  # sense terminals
+    side = Side.TOP if up else Side.BOTTOM
+    (lc, ls), (rc, rs) = ((cb, sb), (ca, sa)) if mirrored else ((ca, sa), (cb, sb))
+    pins = {
+        lc.id: PinShape(lc.id, 0, y, 0, y, Side.LEFT),
+        rc.id: PinShape(rc.id, w, y, w, y, Side.RIGHT),
+        ls.id: PinShape(ls.id, 1, ty, 1, ty, side, 0),
+        rs.id: PinShape(rs.id, w - 1, ty, w - 1, ty, side, 1),
+    }
+    cx = w / 2.0
+    tw = _text_w(comp.id, CHAR_TITLE)
+    vw = _text_w(comp.value, CHAR_VALUE)
+    t0 = y + 0.5 if up else -0.85
+    text = [(cx - tw / 2.0, t0, cx + tw / 2.0, t0 + 0.6)]
+    if comp.value:
+        text.append((cx - vw / 2.0, t0 + 0.6, cx + vw / 2.0, t0 + 1.2))
     return Shape(w, h, pins, text)
 
 

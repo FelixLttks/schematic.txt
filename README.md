@@ -199,7 +199,7 @@ svg = render("MCU.GND -> Sensor.GND", theme="dark", effort="fast")
 MCU: ESP32-C3
   pins: 3V3, GND, GPIO8(SDA)
 
-# Resistors, capacitors, LEDs, diodes, fuses and switches are drawn as symbols.
+# Resistors, capacitors, LEDs, diodes, fuses, switches and shunts are drawn as symbols.
 R1: resistor 4.7k
 
 # One pin to many, as a named net.
