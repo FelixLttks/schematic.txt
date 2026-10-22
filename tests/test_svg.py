@@ -126,6 +126,14 @@ def test_mosfet_is_drawn_as_symbol():
     assert "AO3400A" in svg
 
 
+def test_lamp_marks_its_plus_pin():
+    svg = render("Light: 5V Lamp\n  pins: V+, V-\nMCU.5V -> Light.V+\nLight.V- -> MCU.GND", effort="fast")
+    assert "component-lamp" in svg
+    assert ">+</text>" in svg
+    svg = render("L1: Lamp\n  pins: 1, 2\nMCU.5V -> L1.1\nL1.2 -> MCU.GND", effort="fast")
+    assert ">+</text>" not in svg
+
+
 def test_part_images_are_embedded_from_base_dir():
     svg = render_svg(_laid_out(IMAGE_PART), base_dir=EXAMPLES)
     assert '<image href="data:image/svg+xml;base64,' in svg

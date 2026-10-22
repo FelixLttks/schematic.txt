@@ -153,6 +153,12 @@ def test_standard_components_parsing_dsl():
 
         Q2: P-Channel MOSFET AO3401
           pins: G, D, S
+
+        L1: Lamp 12V
+          pins: 1, 2
+
+        LS: Light Sensor
+          pins: S, VCC, GND
         """
     sch = parse_schematic(code)
     assert sch.components["R1"].is_standard
@@ -191,6 +197,10 @@ def test_standard_components_parsing_dsl():
     assert sch.components["Q1"].value == "AO3400A"
     assert sch.components["Q2"].kind == "pmos"
     assert sch.components["Q2"].value == "AO3401"
+
+    assert sch.components["L1"].kind == "lamp"
+    assert sch.components["L1"].value == "12V"
+    assert not sch.components["LS"].is_standard
 
 
 def test_standard_components_parsing_yaml():

@@ -96,8 +96,8 @@ pins; a connection to `MCU.GND` goes to the first of them.
 
 ## Standard parts
 
-Resistors, capacitors, inductors, diodes, LEDs, fuses, switches, MOSFETs and
-current shunts are drawn as compact symbols instead of boxes. The kind is recognised from the type:
+Resistors, capacitors, inductors, diodes, LEDs, lamps, fuses, switches,
+MOSFETs and current shunts are drawn as compact symbols instead of boxes. The kind is recognised from the type:
 
 ```text
 R1: resistor 10k
@@ -110,6 +110,8 @@ RS1: 7.5mOhm Shunt
   pins: IN, OUT, SENSE+, SENSE-
 Q1: AO3400A N-MOSFET
   pins: G, D, S
+L1: 5V Lamp
+  pins: V+, V-
 ```
 
 or set explicitly, with an optional value:
@@ -126,11 +128,15 @@ R3: 4.7k [resistor]
 
 Recognised kinds (and short forms): `resistor` (`res`, `r`), `capacitor`
 (`cap`, `c`), `inductor` (`ind`, `l`), `diode` (`d`), `led`, `fuse`,
-`switch` (`sw`), `shunt`, `nmos` (`mosfet`, `fet`, `n-mosfet`, `nfet`), `pmos`
+`switch` (`sw`), `lamp` (`light`, `bulb`, `lampe`, `leuchte`), `shunt`, `nmos` (`mosfet`, `fet`, `n-mosfet`, `nfet`), `pmos`
 (`p-mosfet`, `pfet`). A type mentioning a MOSFET, e.g. `IRLZ44N N-Channel
 MOSFET`, is recognised as well; `P-Channel` or `P-MOSFET` make it a `pmos`. A
 MOSFET has three pins, gate, drain and source, found by name (`G` / `gate`,
-`D` / `drain`, `S` / `source`) or else in that order. A switch with three pins is drawn as a changeover switch.
+`D` / `drain`, `S` / `source`) or else in that order. A switch with three
+pins is drawn as a changeover switch.
+A lamp is drawn with the IEC symbol, a circle with a cross; a pin named `+`,
+`V+`, `VCC`, `VIN` or `POS` gets a `+` mark, for lamps with a polarity like
+5 V LED lights.
 A shunt with four pins is drawn as a resistor with Kelvin sense taps: pins
 named `SENSE…`, `S+` / `S-` (otherwise the last two pins) are the taps, and
 `+` / `-` or a declared `left:` / `right:` side puts each tap at the end of

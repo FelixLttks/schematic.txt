@@ -229,6 +229,15 @@ class SvgRenderer:
                     out.append(
                         f'<polygon points="{x0 + 6:.1f},-16 {x0 + 3:.1f},-14.5 {x0 + 4.5:.1f},-13" fill="{s}" />'
                     )
+        elif kind == "lamp":
+            # IEC 60617: circle with a cross
+            lead(-half, -10.0)
+            lead(10.0, half)
+            out.append(f'<circle cx="0" cy="0" r="10" fill="{bg}" stroke="{s}" stroke-width="1.8" />')
+            for y in (-7.1, 7.1):
+                out.append(
+                    f'<line x1="-7.1" y1="{y:.1f}" x2="7.1" y2="{-y:.1f}" stroke="{s}" stroke-width="1.6" />'
+                )
         elif kind == "inductor":
             lead(-half, -18.0)
             lead(18.0, half)
@@ -295,6 +304,8 @@ class SvgRenderer:
                 parts.append(f'<g transform="translate({cx:.1f}, {cy:.1f}){rotate}">')
             parts.extend(self._symbol_body(k, comp, length))
             parts.append("</g>")
+            if k == "lamp":
+                parts.extend(self._plus_mark(comp, vertical))
             if vertical:
                 tx = cx + 14.0
                 parts.append(
@@ -377,6 +388,24 @@ class SvgRenderer:
                     f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" font-size="8" font-weight="600" fill="{t.value}">{html.escape(p.display_name)}</text>'
                 )
         return out
+
+    def _plus_mark(self, comp: Component, vertical: bool) -> list[str]:
+        """A '+' at the plus pin of a polarised two-pin part (a 5 V LED lamp)."""
+        plus = next(
+            (p for p in comp.pins.values() if p.name.upper() in ("+", "V+", "VCC", "VIN", "POS")), None
+        )
+        if plus is None:
+            return []
+        cx = comp.x + comp.width / 2.0
+        cy = comp.y + comp.height / 2.0
+        if vertical:
+            x, y, anchor = cx - 5.0, plus.position.y + math.copysign(14.0, cy - plus.position.y) + 3.5, "end"
+        else:
+            x, y, anchor = plus.position.x + math.copysign(9.0, cx - plus.position.x), cy - 4.0, "middle"
+        return [
+            f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" font-size="10" '
+            f'font-weight="700" fill="{self.t.symbol}">+</text>'
+        ]
 
     def _render_mosfet(self, comp: Component) -> list[str]:
         """Enhancement-mode MOSFET: gate plate, broken channel, source tied to
