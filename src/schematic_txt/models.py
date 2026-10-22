@@ -117,7 +117,18 @@ class Pin:
         return self.name
 
 
-STANDARD_KINDS = {"resistor", "capacitor", "switch", "fuse", "diode", "led", "inductor", "shunt"}
+STANDARD_KINDS = {
+    "resistor",
+    "capacitor",
+    "switch",
+    "fuse",
+    "diode",
+    "led",
+    "inductor",
+    "shunt",
+    "nmos",
+    "pmos",
+}
 
 KIND_SYNONYMS = {
     "resistor": "resistor",
@@ -142,7 +153,18 @@ KIND_SYNONYMS = {
     "spule": "inductor",
     "drossel": "inductor",
     "shunt": "shunt",
+    "mosfet": "nmos",
+    "fet": "nmos",
+    "nmos": "nmos",
+    "n-mosfet": "nmos",
+    "nfet": "nmos",
+    "pmos": "pmos",
+    "p-mosfet": "pmos",
+    "pfet": "pmos",
 }
+
+# "AO3400A N-MOSFET", "N-Channel MOSFET IRLZ44N", "P-Channel FET"
+MOSFET_RE = re.compile(r"\b(?:([np])[- ]?ch(?:annel)?[- ]?)?(?:([np])-?)?(?:mosfet|fet|mos)\b", re.IGNORECASE)
 
 
 def normalize_kind(val: str) -> str | None:
@@ -222,6 +244,16 @@ class Component:
         t_lower = t.lower()
         t_words = set(re.findall(r"[a-z0-9_\-]+", t_lower))
         if any(sw in t_words for sw in skip_words):
+            return
+
+        # 0. MOSFETs, whose type usually carries the channel, e.g.
+        #    "AO3400A N-MOSFET" or "P-Channel MOSFET"
+        m = MOSFET_RE.search(t)
+        if m:
+            channel = (m.group(1) or m.group(2) or "n").lower()
+            self.kind = f"{channel}mos"
+            if not self.value:
+                self.value = " ".join((t[: m.start()] + " " + t[m.end() :]).split())
             return
 
         # 1. Matches "Kind(Value)" e.g. "Resistor(2kOhm)" or "res(10k)"

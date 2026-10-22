@@ -24,7 +24,7 @@ from pathlib import Path
 
 from schematic_txt.colors import net_color
 from schematic_txt.errors import ImageError
-from schematic_txt.layout.shapes import is_vertical_symbol
+from schematic_txt.layout.shapes import is_vertical_symbol, mosfet_roles
 from schematic_txt.models import Component, Pin, Schematic, Side
 
 THEMES = ("light", "dark")
@@ -264,6 +264,8 @@ class SvgRenderer:
             parts.extend(self._render_spdt(comp))
         elif k == "shunt" and len(comp.pins) == 4:
             parts.extend(self._render_shunt(comp))
+        elif k in ("nmos", "pmos") and len(comp.pins) == 3:
+            parts.extend(self._render_mosfet(comp))
         else:
             if k in ("diode", "led") and len(comp.pins) == 2:
                 # Direct vector-driven rotation from Anode to Cathode:
@@ -374,6 +376,48 @@ class SvgRenderer:
                 out.append(
                     f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" font-size="8" font-weight="600" fill="{t.value}">{html.escape(p.display_name)}</text>'
                 )
+        return out
+
+    def _render_mosfet(self, comp: Component) -> list[str]:
+        """Enhancement-mode MOSFET: gate plate, broken channel, source tied to
+        the body; the body arrow points in for N-channel, out for P-channel."""
+        t = self.t
+        s = t.symbol
+        out: list[str] = []
+        gate, drain, source = mosfet_roles(comp)
+        x = drain.position.x  # drain / source leads
+        ym = gate.position.y
+        sgn = 1.0 if x > gate.position.x else -1.0
+        plate, ch = x - sgn * 22.0, x - sgn * 16.0
+        yd = ym + math.copysign(14.0, drain.position.y - ym)
+        ys = ym + math.copysign(14.0, source.position.y - ym)
+
+        def line(x1: float, y1: float, x2: float, y2: float, width: float = 1.8) -> None:
+            out.append(
+                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="{s}" stroke-width="{width}" />'
+            )
+
+        line(gate.position.x, ym, plate, ym)
+        line(plate, ym - 16.0, plate, ym + 16.0, 2.2)
+        for y in (yd, ym, ys):
+            line(ch, y - 5.0, ch, y + 5.0, 2.4)
+        line(ch, yd, x, yd)
+        line(x, yd, x, drain.position.y)
+        line(ch, ys, x, ys)
+        line(x, ym, x, source.position.y)
+        line(ch, ym, x, ym)
+        tip, back = (ch, ch + sgn * 8.0) if comp.kind == "nmos" else (x - sgn * 2.0, x - sgn * 10.0)
+        out.append(
+            f'<polygon points="{tip:.1f},{ym:.1f} {back:.1f},{ym - 4.0:.1f} {back:.1f},{ym + 4.0:.1f}" fill="{s}" />'
+        )
+        tx, anchor = (x + sgn * 10.0, "start" if sgn > 0 else "end")
+        out.append(
+            f'<text x="{tx:.1f}" y="{ym - 3.0:.1f}" text-anchor="{anchor}" font-family="{FONT_SANS}" font-size="10" font-weight="700" fill="{t.text_title}">{html.escape(comp.id)}</text>'
+        )
+        if comp.value:
+            out.append(
+                f'<text x="{tx:.1f}" y="{ym + 10.0:.1f}" text-anchor="{anchor}" font-family="{FONT_MONO}" font-size="9" font-weight="600" fill="{t.value}">{html.escape(comp.value)}</text>'
+            )
         return out
 
     def _render_shunt(self, comp: Component) -> list[str]:

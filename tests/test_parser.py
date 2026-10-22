@@ -147,6 +147,12 @@ def test_standard_components_parsing_dsl():
 
         RS1: 7.5mOhm FL-2C Shunt
           pins: IN, OUT, SENSE+, SENSE-
+
+        Q1: AO3400A N-MOSFET
+          pins: G, D, S
+
+        Q2: P-Channel MOSFET AO3401
+          pins: G, D, S
         """
     sch = parse_schematic(code)
     assert sch.components["R1"].is_standard
@@ -180,6 +186,11 @@ def test_standard_components_parsing_dsl():
     assert sch.components["RS1"].is_standard
     assert sch.components["RS1"].kind == "shunt"
     assert sch.components["RS1"].value == "7.5mOhm FL-2C"
+
+    assert sch.components["Q1"].kind == "nmos"
+    assert sch.components["Q1"].value == "AO3400A"
+    assert sch.components["Q2"].kind == "pmos"
+    assert sch.components["Q2"].value == "AO3401"
 
 
 def test_standard_components_parsing_yaml():

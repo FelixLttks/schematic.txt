@@ -49,6 +49,7 @@ from schematic_txt.layout.shapes import (
     box_shape,
     classify,
     image_shape,
+    mosfet3_shape,
     shunt4_shape,
     shunt_roles,
     switch3_shape,
@@ -79,6 +80,10 @@ class PartModel:
             self.variants = [0, 1] if comp.rotatable and not declared else [0]
             if declared:
                 self.variants = [r for r in (0, 1) if self._matches(switch3_shape(comp, r))] or [0]
+        elif self.kind == "mosfet3":
+            self.variants = [0, 1, 2, 3] if comp.rotatable else [0]
+            if declared:
+                self.variants = [r for r in self.variants if self._matches(mosfet3_shape(comp, r))] or [0]
         elif self.kind == "shunt4":
             self.variants = [0, 1, 2, 3] if comp.rotatable else [0]
             if declared:
@@ -123,6 +128,8 @@ class PartModel:
             s = symbol2_shape(self.comp, variant)
         elif self.kind == "switch3":
             s = switch3_shape(self.comp, variant)
+        elif self.kind == "mosfet3":
+            s = mosfet3_shape(self.comp, variant)
         elif self.kind == "shunt4":
             s = shunt4_shape(self.comp, variant)
         elif self.kind == "image":

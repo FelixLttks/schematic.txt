@@ -106,6 +106,26 @@ def test_shunt_is_drawn_with_kelvin_taps():
     assert "7.5mOhm" in svg
 
 
+def test_mosfet_is_drawn_as_symbol():
+    text = """
+        Q1: AO3400A N-MOSFET
+          pins: S, G, D
+
+        MCU.GPIO2 -> Q1.G
+        Q1.D -> Light.V-
+        Q1.S -> MCU.GND
+        """
+    sch = _laid_out(text)
+    pins = sch.components["Q1"].pins
+    # pins are found by name, not by order
+    assert pins["G"].side in (Side.LEFT, Side.RIGHT)
+    assert {pins["D"].side, pins["S"].side} == {Side.TOP, Side.BOTTOM}
+    assert pins["D"].position.x == pins["S"].position.x
+    svg = render_svg(sch)
+    assert "component-nmos" in svg
+    assert "AO3400A" in svg
+
+
 def test_part_images_are_embedded_from_base_dir():
     svg = render_svg(_laid_out(IMAGE_PART), base_dir=EXAMPLES)
     assert '<image href="data:image/svg+xml;base64,' in svg

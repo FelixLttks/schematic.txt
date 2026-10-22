@@ -11,6 +11,7 @@ A component can have several *variants*:
 
 * two-pin symbols (resistor, capacitor, ...): four rotations;
 * three-pin switches: common terminal left or right;
+* three-pin MOSFETs: gate left or right, drain above or below;
 * four-pin shunts: current terminals left / right, sense taps below or
   above, either way round;
 * image parts: 0 / 90 / 270 degrees in placement (only 0 unless rotatable;
@@ -113,14 +114,20 @@ def shunt_kind(comp: Component) -> bool:
     return comp.is_standard and comp.kind == "shunt" and len(comp.pins) == 4
 
 
+def mosfet_kind(comp: Component) -> bool:
+    return comp.is_standard and comp.kind in ("nmos", "pmos") and len(comp.pins) == 3
+
+
 def classify(comp: Component) -> str:
-    """'symbol2' | 'switch3' | 'shunt4' | 'image' | 'box'."""
+    """'symbol2' | 'switch3' | 'mosfet3' | 'shunt4' | 'image' | 'box'."""
     if comp.image:
         return "image"
     if two_pin_kind(comp):
         return "symbol2"
     if switch_kind(comp):
         return "switch3"
+    if mosfet_kind(comp):
+        return "mosfet3"
     if shunt_kind(comp):
         return "shunt4"
     return "box"
@@ -182,6 +189,35 @@ def switch3_shape(comp: Component, rot: int) -> Shape:
     return Shape(w, h, pins, text)
 
 
+def mosfet_roles(comp: Component) -> tuple[Pin, Pin, Pin]:
+    """(gate, drain, source), found by name (``G`` / ``gate``, ...),
+    otherwise in the order the pins are declared."""
+    pins = list(comp.pins.values())
+    names = (("g", "gate"), ("d", "drain"), ("s", "source"))
+    found = [next((p for p in pins if p.name.lower() in n), None) for n in names]
+    if any(p is None for p in found) or len({p.id for p in found}) != 3:
+        return pins[0], pins[1], pins[2]
+    return found[0], found[1], found[2]
+
+
+def mosfet3_shape(comp: Component, rot: int) -> Shape:
+    """rot bit 0: gate on the right; bit 1: drain below.  Name and value
+    sit beside the symbol, away from the gate."""
+    gate, drain, source = mosfet_roles(comp)
+    mirrored, down = bool(rot & 1), bool(rot & 2)
+    w, h = 2, 4
+    gx, cx = (w, 0) if mirrored else (0, w)
+    (dy, ds), (sy, ss) = ((h, Side.BOTTOM), (0, Side.TOP)) if down else ((0, Side.TOP), (h, Side.BOTTOM))
+    pins = {
+        gate.id: PinShape(gate.id, gx, 2, gx, 2, Side.RIGHT if mirrored else Side.LEFT),
+        drain.id: PinShape(drain.id, cx, dy, cx, dy, ds),
+        source.id: PinShape(source.id, cx, sy, cx, sy, ss),
+    }
+    tw = max(_text_w(comp.id, CHAR_TITLE), _text_w(comp.value, CHAR_VALUE))
+    x0 = -0.4 - tw if mirrored else w + 0.4
+    return Shape(w, h, pins, [(x0, 1.25, x0 + tw, 2.75)])
+
+
 def _is_sense(pin: Pin) -> bool:
     n = pin.name.lower()
     return n.startswith(("sense", "sns", "kelvin")) or n in ("s+", "s-", "sp", "sn")
@@ -197,13 +233,17 @@ def shunt_roles(comp: Component) -> tuple[Pin, Pin, Pin, Pin]:
         sense = pins[2:]
     ca, cb = (p for p in pins if p not in sense)
     sa, sb = sense
-    if sa.name.endswith("-") or sb.name.endswith("+") or (
-        # No polarity in the names: a sense pin declared on the side of a
-        # current pin belongs to that end.
-        not (sa.name.endswith("+") or sb.name.endswith("-"))
-        and sb.side_specified
-        and ca.side_specified
-        and sb.side == ca.side != sa.side
+    if (
+        sa.name.endswith("-")
+        or sb.name.endswith("+")
+        or (
+            # No polarity in the names: a sense pin declared on the side of a
+            # current pin belongs to that end.
+            not (sa.name.endswith("+") or sb.name.endswith("-"))
+            and sb.side_specified
+            and ca.side_specified
+            and sb.side == ca.side != sa.side
+        )
     ):
         sa, sb = sb, sa
     return ca, cb, sa, sb
