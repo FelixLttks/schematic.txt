@@ -120,7 +120,7 @@ class SvgRenderer:
         t = self.t
         min_x, min_y, vb_w, vb_h = self._bounds()
         svg: list[str] = [
-            f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'width="{vb_w:.0f}" height="{vb_h:.0f}" '
             f'viewBox="{min_x:.1f} {min_y:.1f} {vb_w:.1f} {vb_h:.1f}" '
             f'class="schematic-canvas" '
@@ -546,13 +546,13 @@ class SvgRenderer:
             angle = {90: 90, 180: 180, 270: -90}[rotation]
             parts.append(f'<g transform="rotate({angle} {cx:.1f} {cy:.1f})">')
             parts.append(
-                f'<image href="{img_href}" xlink:href="{img_href}" x="{origin_x + ix:.1f}" y="{origin_y + iy:.1f}" '
+                f'<image href="{img_href}" x="{origin_x + ix:.1f}" y="{origin_y + iy:.1f}" '
                 f'width="{iw:.1f}" height="{ih:.1f}" preserveAspectRatio="none" filter="url(#comp-shadow)" />'
             )
             parts.append("</g>")
         else:
             parts.append(
-                f'<image href="{img_href}" xlink:href="{img_href}" x="{comp.x + ix:.1f}" y="{comp.y + iy:.1f}" '
+                f'<image href="{img_href}" x="{comp.x + ix:.1f}" y="{comp.y + iy:.1f}" '
                 f'width="{iw:.1f}" height="{ih:.1f}" preserveAspectRatio="none" filter="url(#comp-shadow)" />'
             )
         # Outline boundary
