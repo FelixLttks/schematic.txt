@@ -126,7 +126,7 @@ ESP32.GND -> Sensor.GND
         assert p.lead_start.y % GRID_SIZE == 0.0
 
     svg = render_svg(sch)
-    assert '<image href="parts/esp32_devkit.svg"' in svg
+    assert '<image xlink:href="parts/esp32_devkit.svg"' in svg
     assert 'class="component-custom"' in svg
     # Check that pin pad circle is rendered
     assert '<circle cx="' in svg

@@ -136,12 +136,12 @@ def test_lamp_marks_its_plus_pin():
 
 def test_part_images_are_embedded_from_base_dir():
     svg = render_svg(_laid_out(IMAGE_PART), base_dir=EXAMPLES)
-    assert '<image href="data:image/svg+xml;base64,' in svg
+    assert '<image xlink:href="data:image/svg+xml;base64,' in svg
 
 
 def test_part_image_paths_are_kept_without_base_dir():
     svg = render_svg(_laid_out(IMAGE_PART))
-    assert '<image href="parts/esp32_devkit.svg"' in svg
+    assert '<image xlink:href="parts/esp32_devkit.svg"' in svg
 
 
 def test_missing_part_image_is_an_error(tmp_path):
