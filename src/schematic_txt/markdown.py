@@ -27,8 +27,8 @@ which is folded into a ``<details>`` element::
 
 The source block stays the single source of truth: running again finds the
 generated wrapper and updates it in place.  Image names carry a hash of the
-source and the layout effort, so unchanged blocks are not laid out again
-and images that are no longer referenced are removed.
+source, the layout effort and the output version, so unchanged blocks are
+not laid out again and images that are no longer referenced are removed.
 
 The image links are relative to the Markdown file by default.  Site
 generators that serve a page from another place than its source (mdBook
@@ -52,6 +52,9 @@ from schematic_txt.svg import render_svg
 
 LANGUAGE = "schematic"
 DEFAULT_OUT_DIR = "schematics"
+# Part of every image name.  Increase it whenever a release draws the same
+# source differently, so that `--check` reports the old images as stale.
+OUTPUT_VERSION = 2
 
 MARKER = "<!-- schematic.txt: image rendered from the source below; edit the source, not the image -->"
 # the generated wrapper, apart from the two image lines
@@ -155,7 +158,7 @@ def _wrapped(block: Block, light: str, dark: str) -> list[str]:
 
 
 def _image_names(md_path: Path, block: Block, effort: str) -> tuple[str, str]:
-    key = hashlib.sha256(f"{effort}\n{block.source}".encode()).hexdigest()[:10]
+    key = hashlib.sha256(f"{OUTPUT_VERSION}\n{effort}\n{block.source}".encode()).hexdigest()[:10]
     stem = f"{md_path.stem}-{key}"
     return f"{stem}.svg", f"{stem}.dark.svg"
 

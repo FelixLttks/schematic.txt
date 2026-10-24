@@ -2,6 +2,7 @@
 
 import pytest
 
+from schematic_txt import markdown
 from schematic_txt.markdown import MARKER, find_blocks, markdown_files, process_file
 
 DOC = """\
@@ -128,3 +129,9 @@ def test_image_directory_outside_the_site_root_is_an_error(doc, tmp_path):
     outcome = process_file(doc, effort="fast", base_url="/", site_root=tmp_path / "elsewhere")
     assert outcome.errors and "not below the site root" in outcome.errors[0]
     assert doc.read_text() == DOC
+
+
+def test_output_version_is_part_of_the_image_name(doc, monkeypatch):
+    process_file(doc, effort="fast")
+    monkeypatch.setattr(markdown, "OUTPUT_VERSION", markdown.OUTPUT_VERSION + 1)
+    assert process_file(doc, effort="fast", check=True).changed

@@ -11,8 +11,8 @@ simulation tool.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-1f98f04a3c.dark.svg">
-  <img alt="Schematic" src="schematics/README-1f98f04a3c.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-a001c55381.dark.svg">
+  <img alt="Schematic" src="schematics/README-a001c55381.svg">
 </picture>
 
 <details>
@@ -73,7 +73,9 @@ schematic md --check .         # exit 1 if any image is missing or stale
 ```
 
 Running it again only renders blocks that changed, and deletes images that
-are no longer used.
+are no longer used. A release that draws schematics
+differently changes the image names too, so `--check` also catches images
+made with an older version.
 
 ### Keeping the images up to date
 
@@ -237,8 +239,8 @@ No declarations: parts and pins come from the connections.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-45b3cfd64f.dark.svg">
-  <img alt="Schematic" src="schematics/README-45b3cfd64f.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-b7a9fde5f6.dark.svg">
+  <img alt="Schematic" src="schematics/README-b7a9fde5f6.svg">
 </picture>
 
 <details>
@@ -260,8 +262,8 @@ junctions.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-61b4df0385.dark.svg">
-  <img alt="Schematic" src="schematics/README-61b4df0385.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-5e6a0427b5.dark.svg">
+  <img alt="Schematic" src="schematics/README-5e6a0427b5.svg">
 </picture>
 
 <details>
@@ -296,8 +298,8 @@ feeding the board.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-66ca01d977.dark.svg">
-  <img alt="Schematic" src="schematics/README-66ca01d977.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-97282fd307.dark.svg">
+  <img alt="Schematic" src="schematics/README-97282fd307.svg">
 </picture>
 
 <details>
@@ -337,8 +339,8 @@ with its pins placed on a grid.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-acdbb4c6b4.dark.svg">
-  <img alt="Schematic" src="schematics/README-acdbb4c6b4.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-1827b3ab61.dark.svg">
+  <img alt="Schematic" src="schematics/README-1827b3ab61.svg">
 </picture>
 
 <details>
