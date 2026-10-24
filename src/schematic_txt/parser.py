@@ -71,9 +71,11 @@ def parse_pin_ref(
 class SchematicParser:
     def __init__(self):
         self.schematic = Schematic()
+        self._templated: set[str] = set()  # components a part template was applied to
 
     def parse(self, text: str) -> Schematic:
         self.schematic = Schematic()
+        self._templated = set()
         stripped = text.strip()
         if not stripped:
             return self.schematic
@@ -91,7 +93,7 @@ class SchematicParser:
         # Resolve custom part templates for components
         for comp in self.schematic.components.values():
             part = self.schematic.parts.get(comp.type_name) or self.schematic.parts.get(comp.id)
-            if part and not comp.image:
+            if part and not comp.image and comp.id not in self._templated:
                 self._apply_part_template(comp, part)
 
         return self.schematic
@@ -228,6 +230,7 @@ class SchematicParser:
                         self._add_net_by_pin_strings(connect_list, net_name=name, line_num=idx)
 
     def _apply_part_template(self, comp: Component, part: PartTemplate) -> None:
+        self._templated.add(comp.id)
         if not comp.image:
             comp.image = part.image
         if not comp.grid_width:

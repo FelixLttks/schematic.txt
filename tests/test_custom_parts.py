@@ -266,3 +266,20 @@ RightLoad.1 -> MCU.5V
     # Verify rendered text shows 'GND' and '5V' without internal '#2' suffixes
     assert ">GND<" in svg
     assert ">GND#2<" not in svg
+
+
+def test_part_without_image_gets_its_pins_once():
+    text = """
+part Board:
+  size: 4x4
+  pins:
+    VIN: 0, 1
+    GND: 0, 2
+    GND: 3, 2
+
+X: Board
+X.VIN -> Y.VIN
+"""
+    sch = parse_schematic(text)
+    pins = sorted((p.name, p.grid_x, p.grid_y) for p in sch.components["X"].pins.values())
+    assert pins == [("GND", 0, 2), ("GND", 3, 2), ("VIN", 0, 1)]
