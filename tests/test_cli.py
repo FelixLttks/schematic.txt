@@ -63,3 +63,8 @@ def test_md_check_fails_until_rendered(tmp_path, capsys):
 def test_serve_rejects_other_file_types(tmp_path, capsys):
     assert main(["serve", str(tmp_path / "board.svg"), "--no-browser"]) == 1
     assert "expected a .txt or .md file" in capsys.readouterr().err
+
+
+def test_md_base_url_needs_a_site_root(tmp_path, capsys):
+    assert main(["md", str(tmp_path), "--base-url", "/docs/"]) == 1
+    assert "--site-root" in capsys.readouterr().err

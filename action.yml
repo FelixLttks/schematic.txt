@@ -14,6 +14,12 @@ inputs:
   out-dir:
     description: Image directory, relative to each Markdown file
     default: schematics
+  base-url:
+    description: Link images as this URL plus their path below site-root, instead of relative to the Markdown file
+    default: ""
+  site-root:
+    description: Source directory of the site that base-url points to
+    default: ""
   check:
     description: Only check that every image is up to date, and fail if not
     default: "false"
@@ -29,8 +35,12 @@ runs:
         EFFORT: ${{ inputs.effort }}
         OUT_DIR: ${{ inputs.out-dir }}
         CHECK: ${{ inputs.check }}
+        BASE_URL: ${{ inputs.base-url }}
+        SITE_ROOT: ${{ inputs.site-root }}
       run: |
         args=(--effort "$EFFORT" --out-dir "$OUT_DIR")
         if [[ "$CHECK" == "true" ]]; then args+=(--check); fi
+        if [[ -n "$BASE_URL" ]]; then args+=(--base-url "$BASE_URL"); fi
+        if [[ -n "$SITE_ROOT" ]]; then args+=(--site-root "$SITE_ROOT"); fi
         read -ra paths <<< "$PATHS"
         pipx run --spec "$ACTION_PATH" schematic md "${args[@]}" "${paths[@]}"

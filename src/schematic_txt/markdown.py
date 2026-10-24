@@ -29,6 +29,12 @@ The source block stays the single source of truth: running again finds the
 generated wrapper and updates it in place.  Image names carry a hash of the
 source and the layout effort, so unchanged blocks are not laid out again
 and images that are no longer referenced are removed.
+
+The image links are relative to the Markdown file by default.  Site
+generators that serve a page from another place than its source (mdBook
+renders the first chapter a second time as ``index.html``) need links that
+work from anywhere: with a base URL, each link is that URL plus the path of
+the image below the site's source root.
 """
 
 from __future__ import annotations
@@ -171,12 +177,18 @@ def process_file(
     effort: str = "balanced",
     force: bool = False,
     check: bool = False,
+    base_url: str | None = None,
+    site_root: Path | None = None,
 ) -> Outcome:
     """Renders the schematic blocks of one Markdown file and updates it.
 
     ``out_dir`` is relative to the Markdown file.  With ``check``, nothing
     is written; the outcome tells what would change.  A block that fails to
     render is left untouched and reported in ``Outcome.errors``.
+
+    With ``base_url`` and ``site_root``, the images are linked as
+    ``base_url`` plus their path below ``site_root`` instead of relative to
+    the Markdown file.
     """
     outcome = Outcome(path)
     text = path.read_text(encoding="utf-8")
@@ -184,7 +196,14 @@ def process_file(
     outcome.blocks = len(blocks)
     lines = text.split("\n")
     images = path.parent / out_dir
-    prefix = out_dir.rstrip("/") + "/"
+    if base_url is None:
+        prefix = out_dir.rstrip("/") + "/"
+    else:
+        try:
+            prefix = _site_url(images, base_url, site_root or Path("."))
+        except ValueError:
+            outcome.errors.append(f"{path}: image directory {images} is not below the site root {site_root}")
+            return outcome
     keep: set[str] = set()
 
     # back to front, so earlier line numbers stay valid while splicing
@@ -221,6 +240,13 @@ def process_file(
                 if not check:
                     image.unlink()
     return outcome
+
+
+def _site_url(images: Path, base_url: str, site_root: Path) -> str:
+    """The URL of the image directory, ending in a slash."""
+    below = images.resolve().relative_to(site_root.resolve())
+    url = base_url.rstrip("/") + "/"
+    return url + "".join(f"{part}/" for part in below.parts)
 
 
 def _locate(path: Path, block: Block, exc: SchematicError) -> str:

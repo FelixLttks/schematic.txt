@@ -85,7 +85,7 @@ with the Markdown, and let CI check that nobody forgot. Locally, the
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FelixLttks/schematic.txt
-    rev: v0.1.0
+    rev: v0.2.0
     hooks:
       - id: schematic-md
 ```
@@ -108,9 +108,26 @@ jobs:
 ```
 
 `@v0` follows the latest 0.x release; pin a full version such as
-`@v0.1.0` to update only on purpose. Inputs: `paths` (default `.`),
-`effort`, `out-dir` (default `schematics`) and `check`. Use the same `effort` locally and in CI: it is part of the
+`@v0.2.0` to update only on purpose. Inputs: `paths` (default `.`),
+`effort`, `out-dir` (default `schematics`), `base-url`, `site-root` and `check`. Use the same `effort` locally and in CI: it is part of the
 image names.
+
+### Documentation sites
+
+The image links are relative to the Markdown file, which is right for
+GitHub. Site generators may serve a page from somewhere else: mdBook, for
+one, renders the first chapter a second time as the site's `index.html`,
+where relative links point nowhere. With `--base-url`, each image is
+linked as that URL plus its path below `--site-root`, so the link works
+from every page:
+
+```sh
+# doc/src/user/wiring.md links /my-project/user/schematics/wiring-….svg
+schematic md --base-url /my-project/ --site-root doc/src doc/src
+```
+
+Pass the same two options to the pre-commit hook (`args:`) and the action
+(`base-url`, `site-root`), otherwise the check finds the links changed.
 
 <details>
 <summary>Rendering in CI instead</summary>

@@ -102,3 +102,29 @@ def test_markdown_files_walks_directories(tmp_path):
         (tmp_path / name).write_text("")
     found = [p.relative_to(tmp_path).as_posix() for p in markdown_files([tmp_path])]
     assert found == ["a.md", "docs/b.md"]
+
+
+def test_base_url_links_images_below_the_site_root(tmp_path):
+    chapter = tmp_path / "src" / "user" / "wiring.md"
+    chapter.parent.mkdir(parents=True)
+    chapter.write_text(DOC, encoding="utf-8")
+    outcome = process_file(chapter, effort="fast", base_url="/project/", site_root=tmp_path / "src")
+    assert outcome.errors == []
+    text = chapter.read_text()
+    assert 'src="/project/user/schematics/wiring-' in text
+    assert 'srcset="/project/user/schematics/wiring-' in text
+    assert not process_file(chapter, effort="fast", base_url="/project/", site_root=tmp_path / "src").changed
+
+
+def test_switching_to_a_base_url_rewrites_the_links_only(doc):
+    process_file(doc, effort="fast")
+    images = _images(doc)
+    outcome = process_file(doc, effort="fast", base_url="https://example.com/docs", site_root=doc.parent)
+    assert outcome.text_changed and not outcome.rendered and not outcome.removed
+    assert f'src="https://example.com/docs/schematics/{images[1]}"' in doc.read_text()
+
+
+def test_image_directory_outside_the_site_root_is_an_error(doc, tmp_path):
+    outcome = process_file(doc, effort="fast", base_url="/", site_root=tmp_path / "elsewhere")
+    assert outcome.errors and "not below the site root" in outcome.errors[0]
+    assert doc.read_text() == DOC

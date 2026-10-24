@@ -53,6 +53,18 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_OUT_DIR,
         help=f"image directory, relative to each Markdown file (default: {DEFAULT_OUT_DIR})",
     )
+    md.add_argument(
+        "--base-url",
+        metavar="URL",
+        help="link images as URL plus their path below --site-root, instead of relative to the Markdown "
+        "file (for site generators that serve pages from other places, e.g. /my-project/)",
+    )
+    md.add_argument(
+        "--site-root",
+        type=Path,
+        metavar="DIR",
+        help="source directory of the site that --base-url points to (e.g. doc/src for mdBook)",
+    )
     _add_effort(md)
     md.add_argument("--force", action="store_true", help="render every block, even if its image exists")
     md.add_argument("--check", action="store_true", help="change nothing; exit 1 if anything is out of date")
@@ -118,6 +130,8 @@ def _markdown(args: argparse.Namespace) -> int:
     missing = [p for p in args.paths if not p.exists()]
     if missing:
         return _fail(f"no such file or directory: {missing[0]}")
+    if (args.base_url is None) != (args.site_root is None):
+        return _fail("--base-url and --site-root must be given together")
     if args.watch:
         if args.check:
             return _fail("--watch and --check cannot be combined")
@@ -129,7 +143,13 @@ def _markdown_once(args: argparse.Namespace) -> int:
     failed = outdated = False
     for path in markdown_files(args.paths):
         outcome = process_file(
-            path, out_dir=args.out_dir, effort=args.effort, force=args.force, check=args.check
+            path,
+            out_dir=args.out_dir,
+            effort=args.effort,
+            force=args.force,
+            check=args.check,
+            base_url=args.base_url,
+            site_root=args.site_root,
         )
         for error in outcome.errors:
             print(f"error: {error}", file=sys.stderr)
