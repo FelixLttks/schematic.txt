@@ -52,13 +52,26 @@ _POSITIVE_TOKENS = {
     "PWR",
 }
 _VOLTAGE = re.compile(r"^\+?\d+(\.\d+)?V\d*$|^\d+V\d+$")
+# Words that may follow the supply word without turning the name into a
+# signal: ``5V_RAW``, ``VBAT_IN``.  Anything else after it (``PWR_EN``,
+# ``VIN_SENSE``, ``3V3_EN``) names a signal *about* the supply.
+_SUPPLY_QUALIFIERS = {"RAW", "IN", "OUT", "MAIN", "SW", "RAIL", "BUS", "AUX", "REG", "HV", "LV"}
+
+
+def _is_positive(toks: list[str]) -> bool:
+    """The name ends in a supply word or a voltage, optionally followed by
+    qualifiers only: ``VCC``, ``DISP_VCC``, ``DCDC_IN_POS``, ``5V_RAW``."""
+    rest = list(toks)
+    while rest and rest[-1] in _SUPPLY_QUALIFIERS:
+        rest.pop()
+    return bool(rest) and (rest[-1] in _POSITIVE_TOKENS or bool(_VOLTAGE.match(rest[-1])))
 
 
 def _category(name: str) -> str:
     toks = [t for t in _TOKEN.split(name.upper()) if t]
     if any(t in _GROUND_TOKENS or t.endswith("GND") or t.startswith("GND") for t in toks):
         return "ground"
-    if any(t in _POSITIVE_TOKENS or _VOLTAGE.match(t) for t in toks):
+    if _is_positive(toks):
         return "positive"
     return "signal"
 

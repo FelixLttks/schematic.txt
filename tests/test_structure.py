@@ -35,6 +35,15 @@ def _analyse(text):
         ("5V", "positive"),
         ("VCC", "positive"),
         ("VOUT_5V", "positive"),
+        ("DISP_VCC", "positive"),
+        ("DCDC_IN_POS", "positive"),
+        ("5V_RAW", "positive"),
+        ("PWR", "positive"),
+        ("PWR_EN", None),  # a signal about the supply, not the supply
+        ("VIN_SENSE", None),
+        ("BAT_ADC", None),
+        ("3V3_EN", None),
+        ("VBUS_DET", None),
         ("LIGHT_NEG", None),  # a switched low side, not ground
         ("I2C_SDA", None),
         ("SPEED_SIGNAL", None),
