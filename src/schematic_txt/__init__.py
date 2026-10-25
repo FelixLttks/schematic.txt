@@ -27,7 +27,7 @@ from schematic_txt.models import Schematic
 from schematic_txt.parser import parse_schematic
 from schematic_txt.svg import render_svg
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 
 def render(

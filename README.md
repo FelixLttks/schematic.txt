@@ -89,7 +89,7 @@ with the Markdown, and let CI check that nobody forgot. Locally, the
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FelixLttks/schematic.txt
-    rev: v0.2.0
+    rev: v0.3.0
     hooks:
       - id: schematic-md
 ```
@@ -112,7 +112,7 @@ jobs:
 ```
 
 `@v0` follows the latest 0.x release; pin a full version such as
-`@v0.2.0` to update only on purpose. Inputs: `paths` (default `.`),
+`@v0.3.0` to update only on purpose. Inputs: `paths` (default `.`),
 `effort`, `out-dir` (default `schematics`), `base-url`, `site-root` and `check`. Use the same `effort` locally and in CI: it is part of the
 image names.
 
