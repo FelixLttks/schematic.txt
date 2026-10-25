@@ -35,6 +35,7 @@ from schematic_txt.models import (
     Component,
     Net,
     NetConnection,
+    NetTag,
     Pin,
     Point,
     Schematic,
@@ -68,6 +69,9 @@ def dump(sch):
                  for n in sch.nets],
         "wires": [[w.start.x, w.start.y, w.end.x, w.end.y, w.net_name] for w in sch.wires],
         "junctions": [[j.point.x, j.point.y, j.net_name] for j in sch.junctions],
+        "net_tags": [[t.net_name, t.component_id, t.pin_id, t.terminal.x, t.terminal.y,
+                      t.stub_end.x, t.stub_end.y, t.side.value, list(t.box)]
+                     for t in getattr(sch, "net_tags", [])],
     }
 
 cases = json.load(open(sys.argv[2]))
@@ -108,6 +112,10 @@ def _schematic_from_dict(data: dict[str, Any]) -> Schematic:
         sch.nets.append(net)
     sch.wires = [WireSegment(Point(x1, y1), Point(x2, y2), name) for x1, y1, x2, y2, name in data["wires"]]
     sch.junctions = [WireJunction(Point(x, y), net_name=name) for x, y, name in data["junctions"]]
+    sch.net_tags = [
+        NetTag(net, comp, pin, Point(tx, ty), Point(sx, sy), Side(side), tuple(box))
+        for net, comp, pin, tx, ty, sx, sy, side, box in data.get("net_tags", [])
+    ]
     return sch
 
 

@@ -1,0 +1,91 @@
+# 14 - A hub with functional blocks
+# A microcontroller between a pump driver, an RS485 bus port, a rain gauge
+# input with its filter, a battery with a fuel gauge, a step-down stage, an
+# SD card and a soil sensor. The groups must be found from the wiring alone
+# and drawn as groups around the microcontroller, each on the side of its
+# pins; supply and ground become tags.
+
+MCU: ESP32-S3
+  left: GPIO4, GPIO5, GPIO6, GPIO1, GPIO8, GPIO9, 5V, GND
+  right: GPIO15, GPIO14, GPIO10, GPIO11, GPIO12, GPIO13, 3V3
+
+Battery: 12V Lead-Acid Battery
+  pins: POS, NEG
+
+Gauge: Battery Fuel Gauge
+  pins: BAT, TS, SDA, SCL, VCC, GND
+
+NTC: 10k Thermistor
+  pins: 1, 2
+
+Fuse: Inline Fuse
+  pins: IN, OUT
+
+DCDC: Step-Down Converter
+  pins: IN+, IN-, OUT+, OUT-
+
+Switch: Slide Switch (SPDT)
+  pins: 1, 2, 3
+
+RS485: RS485 Transceiver
+  pins: DI, RO, DE, A, B, VCC, GND
+
+Rterm: 120Ohm Resistor
+  pins: 1, 2
+
+Port: Bus Terminal
+  pins: A, B, GND
+
+Rain: Rain Gauge
+  pins: OUT, GND
+
+Rrain: 10kOhm Resistor
+  pins: 1, 2
+
+Crain: 100nF Capacitor
+  pins: 1, 2
+
+Pump: 5V Water Pump
+  pins: V+, V-
+
+Q1: AO3400A N-MOSFET
+  pins: G, D, S
+
+Rgate: 1kOhm Resistor
+  pins: 1, 2
+
+Rpd: 10kOhm Resistor
+  pins: 1, 2
+
+D1: SS14 Diode
+  pins: A, K
+
+SD: MicroSD Adapter
+  pins: CS, MOSI, SCK, MISO, VCC, GND
+
+Soil: Soil Moisture Sensor
+  pins: AO, VCC, GND
+
+Battery.POS -> Gauge.BAT, Fuse.IN : VBAT
+Fuse.OUT -> DCDC.IN+ : DCDC_IN
+Gauge.TS -> NTC.1 : BAT_TEMP
+DCDC.OUT+ -> Switch.2 : 5V_RAW
+Switch.1 -> MCU.5V, Pump.V+, D1.K, RS485.VCC : 5V
+MCU.3V3 -> SD.VCC, Gauge.VCC, Rrain.1, Soil.VCC : 3V3
+Battery.NEG -> DCDC.IN-, DCDC.OUT-, MCU.GND, SD.GND, Gauge.GND, NTC.2, RS485.GND, Port.GND, Rain.GND, Crain.2, Soil.GND, Q1.S, Rpd.2 : GND
+MCU.GPIO4 -> RS485.DI : RS_TX
+MCU.GPIO5 <- RS485.RO : RS_RX
+MCU.GPIO6 -> RS485.DE : RS_DE
+RS485.A -> Rterm.1, Port.A : BUS_A
+RS485.B -> Rterm.2, Port.B : BUS_B
+Rain.OUT -> Rrain.2, Crain.1, MCU.GPIO1 : RAIN
+MCU.GPIO8 -> Gauge.SDA : I2C_SDA
+MCU.GPIO9 -> Gauge.SCL : I2C_SCL
+MCU.GPIO11 -> SD.MOSI : SPI_MOSI
+MCU.GPIO13 <- SD.MISO : SPI_MISO
+MCU.GPIO12 -> SD.SCK : SPI_SCK
+MCU.GPIO10 -> SD.CS : SPI_CS
+MCU.GPIO14 <- Soil.AO : SOIL
+MCU.GPIO15 -> Rgate.1 : PUMP_CTRL
+Rgate.2 -> Q1.G, Rpd.1 : PUMP_GATE
+Q1.D -> Pump.V-, D1.A : PUMP_NEG

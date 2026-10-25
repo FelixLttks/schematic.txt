@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from schematic_txt import config_for_effort, layout_schematic, parse_schematic, render_svg
+from schematic_txt.colors import supply_kind
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = ROOT / "tests" / "cases"
@@ -91,7 +92,9 @@ def test_trivial_inputs(text):
 
 def _rename(text: str) -> str:
     """Replaces every part id, pin name and net name by an unrelated name of
-    the same length (text widths stay equal), keeping types untouched."""
+    the same length (text widths stay equal), keeping types untouched and
+    the names of supply and ground nets (the one thing the layout reads
+    from a name: such a net may become tags instead of a wire)."""
     out = []
     mapping = {}
 
@@ -130,7 +133,8 @@ def _rename(text: str) -> str:
         elif is_connection:
             body, _, net = line.partition(" : ")
             body = re.sub(r"(\w+)\.([\w+\-]+)", ref, body)
-            out.append(body + (" : " + alias(net.strip()) if net else ""))
+            net = net.strip()
+            out.append(body + (" : " + (net if supply_kind(net) else alias(net)) if net else ""))
         else:
             out.append(line)
     return "\n".join(out)
@@ -138,8 +142,8 @@ def _rename(text: str) -> str:
 
 @pytest.mark.parametrize("case", ["03_dense_network.txt", "10_long_distance.txt"])
 def test_names_have_no_influence(case):
-    """Names are only labels: renaming parts, pins and nets (same lengths)
-    must give exactly the same geometry."""
+    """Names are only labels: renaming parts, pins and signal nets (same
+    lengths) must give exactly the same geometry."""
     text = (CASES / case).read_text()
     renamed = _rename(text)
     assert text != renamed

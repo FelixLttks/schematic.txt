@@ -37,7 +37,7 @@ class Weights:
     pin_front: float = 2.0  # passing two steps in front of another net's pin (would box it in)
     # Placement only:
     perimeter: float = 0.2  # per grid step of drawing width + height (compactness)
-    rotation: float = 6.0  # image part turned by 90 degrees (180 is never used):
+    rotation: float = 30.0  # image part turned by 90 degrees (180 is never used):
     # photos and their printed labels read best upright
     # Distribution nets (many terminals, e.g. supply and ground) are drawn as
     # wires like any other net, but their bends and length weigh less: they
@@ -50,54 +50,59 @@ class Weights:
 class LayoutConfig:
     weights: Weights = field(default_factory=Weights)
     clearance: int = 2  # free grid lines between footprints (min.)
+    block_gap: int = 4  # between footprints of different functional blocks (min.)
     group_gap: int = 6  # between unconnected sub-circuits
     margin: int = 2  # empty border (grid)
-    restarts: int = 14  # independent annealing runs (different seeds, run in parallel)
-    moves_per_part: int = 500  # annealing moves per component and run
+    # Net tags: ground nets with at least this many terminals, and positive
+    # supplies with at least that many, get a tag at every pin instead of a wire.
+    net_tags: bool = True
+    ground_tag_min_terminals: int = 3
+    supply_tag_min_terminals: int = 5
+    block_restarts: int = 3  # annealing runs per block layout (the best is kept)
+    block_compactness: float = 2.0  # factor on the perimeter weight inside a block
+    moves_per_part: int = 300  # annealing moves per component of a block
+    min_block_moves: int = 2000  # at least this many per run (small blocks are cheap)
     start_temperature: float = 0.3  # x mean uphill step of the start layout
-    routed_candidates: int = 0  # best placements that are routed for real (0: all)
+    arrange_rounds: int = 3  # rounds of moving single blocks after the first arrangement
+    arrange_trials: int = 3  # independent arrangements (seeds), all routed, the best kept
     reroute_passes: int = 3  # rip-up-and-reroute passes
-    refine_rounds: int = 15  # final local search on the routed drawing (0: off)
-    refine_batch: int = 14  # changes routed for real per refinement round
+    refine_rounds: int = 0  # local search on the routed drawing (0: off)
+    refine_batch: int = 8  # changes routed for real per refinement round
     refine_patience: int = 3  # rounds without improvement before it stops
     net_labels: bool = True
-    workers: int = 0  # parallel processes for independent runs (0: CPU count - 1)
     seed: int = 1
 
 
 def config_for_effort(effort: str = "balanced") -> LayoutConfig:
     """Quality / running-time presets.
 
-    Measured on the examples and test cases: the estimated cost of a
-    placement predicts the routed cost only roughly (the cheapest estimate
-    is often not the cheapest drawing), while routing costs about a tenth
-    of a placement run.  So every run is routed for real, and many shorter
-    runs beat a few long ones (14 x 500 vs. 6 x 1000 moves: -3.5 % total
-    cost, -9 % crossings, same running time).  Runs execute in parallel
-    processes.
+    The layout is hierarchical (see ``engine``): blocks of a few parts are
+    annealed on their own, then arranged as units.  Effort buys more
+    annealing runs per block, more rounds of rearranging blocks and, for
+    ``thorough``, a refinement in which candidate changes are routed for
+    real.
 
-    The winner is then refined against the real objective (see
-    ``engine._refine``): every round routes ``refine_batch`` changes for
-    real and keeps the best if the finished drawing gets better (all 19
-    inputs, balanced: -6 % cost, -12 % crossings).
-
-    * ``fast``: 2 runs x 300 moves, short refinement -- live preview;
-    * ``balanced`` (default): 14 runs x 500 moves, up to 15 rounds;
-    * ``thorough``: 28 runs x 1500 moves, up to 60 rounds (minutes).
+    * ``fast``: two short runs per block, two trials, one rearranging round
+      -- live preview;
+    * ``balanced`` (default): three runs per block, three trials, three rounds;
+    * ``thorough``: six longer runs per block, eight trials, five rounds,
+      refinement.
     """
     cfg = LayoutConfig()
     if effort == "fast":
-        cfg.restarts = 2
-        cfg.moves_per_part = 300
-        cfg.refine_rounds = 4
-        cfg.refine_batch = 7
-        cfg.refine_patience = 1
+        cfg.block_restarts = 2
+        cfg.moves_per_part = 150
+        cfg.min_block_moves = 800
+        cfg.arrange_rounds = 1
+        cfg.arrange_trials = 2
         cfg.reroute_passes = 2
     elif effort == "thorough":
-        cfg.restarts = 28
-        cfg.moves_per_part = 1500
-        cfg.refine_rounds = 60
-        cfg.refine_patience = 6
+        cfg.block_restarts = 6
+        cfg.moves_per_part = 800
+        cfg.min_block_moves = 5000
+        cfg.arrange_rounds = 5
+        cfg.arrange_trials = 8
+        cfg.refine_rounds = 20
         cfg.reroute_passes = 4
     elif effort != "balanced":
         raise ValueError(f"unknown effort level {effort!r}; expected one of {', '.join(EFFORT_LEVELS)}")

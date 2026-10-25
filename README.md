@@ -2,8 +2,10 @@
 
 Write down how a circuit is wired, as plain text, and get a schematic you
 can actually read. Parts are placed and wires routed automatically, with
-the layout tuned for following wires by eye: few crossings, straight
-connections, buses drawn as one trunk.
+the layout tuned for following wires by eye: parts that belong together
+(found from the wiring) drawn as a group, each group beside the pins it
+uses, ground and supplies as tags instead of wires across the drawing, few
+crossings, straight connections, buses drawn as one trunk.
 
 It is meant for documenting the wiring of hobby and embedded projects next
 to the code, in Markdown, under version control. It is not a PCB or
@@ -11,8 +13,8 @@ simulation tool.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-a001c55381.dark.svg">
-  <img alt="Schematic" src="schematics/README-a001c55381.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-e53d02cc13.dark.svg">
+  <img alt="Schematic" src="schematics/README-e53d02cc13.svg">
 </picture>
 
 <details>
@@ -196,9 +198,9 @@ length, a readability score). Every command takes `--effort`:
 
 | Effort | Use | Time for ~20 parts |
 |---|---|---|
-| `fast` | live preview | seconds |
-| `balanced` | default | about 2 min |
-| `thorough` | dense circuits, final images | several minutes |
+| `fast` | live preview | a few seconds |
+| `balanced` | default | about 20 s |
+| `thorough` | dense circuits, final images | about a minute |
 
 Small circuits take a few seconds at any level. Layout is deterministic:
 the same input gives the same image.
@@ -239,8 +241,8 @@ No declarations: parts and pins come from the connections.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-b7a9fde5f6.dark.svg">
-  <img alt="Schematic" src="schematics/README-b7a9fde5f6.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-9a596e295f.dark.svg">
+  <img alt="Schematic" src="schematics/README-9a596e295f.svg">
 </picture>
 
 <details>
@@ -262,8 +264,8 @@ junctions.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-5e6a0427b5.dark.svg">
-  <img alt="Schematic" src="schematics/README-5e6a0427b5.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-1cbc94c5d6.dark.svg">
+  <img alt="Schematic" src="schematics/README-1cbc94c5d6.svg">
 </picture>
 
 <details>
@@ -298,8 +300,8 @@ feeding the board.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-97282fd307.dark.svg">
-  <img alt="Schematic" src="schematics/README-97282fd307.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-6c032866af.dark.svg">
+  <img alt="Schematic" src="schematics/README-6c032866af.svg">
 </picture>
 
 <details>
@@ -339,8 +341,8 @@ with its pins placed on a grid.
 
 <!-- schematic.txt: image rendered from the source below; edit the source, not the image -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-1827b3ab61.dark.svg">
-  <img alt="Schematic" src="schematics/README-1827b3ab61.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="schematics/README-1d2dc2ecb9.dark.svg">
+  <img alt="Schematic" src="schematics/README-1d2dc2ecb9.svg">
 </picture>
 
 <details>

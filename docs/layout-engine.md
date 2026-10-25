@@ -7,7 +7,7 @@ way, and how to change it without breaking it.
 
 The tool documents wiring. A reader must be able to follow every wire from
 pin to pin and recognise functional groups. The drawing does not need to be
-compact.
+as compact as possible, but a group should look like one.
 
 "Readable" means the eye can **follow a wire** without hesitating anywhere,
 and it sees **groups** at a glance. That gives testable properties.
@@ -40,25 +40,37 @@ and it sees **groups** at a glance. That gives testable properties.
 | P3 | **Photos upright** | image parts turn by ±90° only, at a cost |
 | P4 | **Calm, compact overall picture** | minimum clearance (hard), perimeter term |
 
-The most important design rule follows from this: **there is exactly one
-cost model** (`config.Weights`). The same numbers price a placement (through
-the route estimate), steer the router (A* step costs) and score the result.
-When all three stages agree on what "better" means, an improvement in one
-place cannot cause a regression in another that the model does not see.
+**Structure**
+
+| | Property | Implementation |
+|---|---|---|
+| S1 | **Functional groups are visible**: the parts of a MOSFET driver, a bus transceiver with its termination, the battery path sit together and apart from the rest | blocks found from the wiring alone (modularity communities, `structure.py`); a wider gap between blocks than inside one (`block_gap` vs. `clearance`); blocks laid out compactly |
+| S2 | **The core in the middle, everything on the side of its pins**: a microcontroller wired to everything is the centre; each group sits beside the pins it uses, in the order of those pins | hub detection; ring arrangement (`engine._Arranger.place_ring`) |
+| S3 | **Supplies do not cut through the drawing**: ground and supply rails become a tag with the net name at every pin, as in every schematic editor | net tags (`structure.py`, `shapes.with_tags`) |
+
+The most important design rule for the drawing itself: **there is exactly
+one cost model** (`config.Weights`). The same numbers price a placement
+(through the route estimate), steer the router (A* step costs) and score the
+result. When all three stages agree on what "better" means, an improvement in
+one place cannot cause a regression in another that the model does not see.
+The structure (S1-S3) is not priced: it is built in by the way the drawing
+is assembled, because a cost model sees each wire and each crossing, not
+the picture as a whole.
 
 Default weights: crossing 12, bend 4, length 0.4 per grid step (20 px),
 junction 0.5, step beside a foreign wire 0.5, bundle step without a mate
-0.4. So a bend costs as much as 200 px of detour, a crossing as much as three
-bends, a wire across 100 grid steps as much as four bends. Length started at
-0.2; side by side, those drawings were too wide and had too many long wires
-across the picture. Nets with many terminals (5 or more: supply, ground,
-large buses) count bends and length at half weight: they have to reach
-everything, the signals should stay clean. This classification follows from
-the number of terminals alone.
+0.4, a photo turned by 90° 30. So a bend costs as much as 200 px of detour,
+a crossing as much as three bends, a wire across 100 grid steps as much as
+four bends. Nets with many terminals (5 or more: large buses) count bends
+and length at half weight. Inside a block the perimeter weighs twice as
+much (`block_compactness`), so a group also looks like one.
 
-**Names have no influence.** Net, pin and part names are used only for text
-width (space) and colour (`colors.py`: ground grey/black, supplies red). A
-test renames everything and requires identical geometry
+**Names have almost no influence.** Net, pin and part names are used for
+text width (space), colour (`colors.py`: ground grey/black, supplies red)
+and for one layout decision: which nets are supplies and become tags
+(`colors.supply_kind`). Structure alone cannot tell a supply from a bus, both
+join many parts. Grouping uses the wiring only. A test renames parts, pins
+and signal nets and requires identical geometry
 (`tests/test_engine.py::test_names_have_no_influence`).
 
 ## 2. Research
@@ -88,13 +100,25 @@ test renames everything and requires identical geometry
 | **Simulated annealing on an arbitrary objective** (Kirkpatrick 1983; Davidson & Harel 1996; Stott et al. 2011 for metro maps) | optimises exactly the objective we want, deterministic with a fixed seed; needs a fast, *honest* estimate |
 | **Rectilinear Steiner trees, single-trunk heuristic** (Hanan 1966; FLUTE) | realistic model for buses and supplies |
 | **A\* with heading state, rip-up and reroute / PathFinder** (Hart et al. 1968; McMurchie & Ebeling 1995) | standard for grid routing with bend costs and hard rules |
+| **Community detection by modularity** (Newman & Girvan 2004; greedy agglomeration, Clauset, Newman & Moore 2004) | finds groups of parts wired more tightly to each other than to the rest, without parameters, in milliseconds for a few dozen parts |
+| **Clustering before placement, floorplanning** (VLSI: hierarchical placement of clusters, then of cells) | small problems instead of one large one; the clusters stay together by construction |
 
-**Chosen:** VLSI-style two-stage placement (analytic globally, annealing
-locally) on an honest estimate that agrees with the router; an A* router
-with the same weights; several independent runs in parallel, all routed for
-real. Reasons: the objective is free (no columns imposed), every decision
-(position, rotation, pin side) is a variable rather than a rule, and it needs
-no dependencies (pure Python).
+**Chosen:** hierarchical placement. The circuit is split into functional
+blocks (modularity on the signal wiring, a hub of its own); each block of a
+few parts is placed by the VLSI-style annealing on an honest estimate that
+agrees with the router; the blocks are then arranged as units around the
+core, on the side of the pins they use; finally an A* router with the same
+weights. Reasons: the groups a reader looks for are built in rather than
+hoped for, every search is small (a handful of parts, a handful of blocks),
+and it needs no dependencies (pure Python).
+
+**Replaced: one annealing over the whole drawing** (versions up to 0.2).
+14 independent runs over all parts, all routed, the best refined against
+the routed result. On a 19-part project with supply wires
+this took ten minutes on a four-core Windows machine and still
+produced 27 crossings and supply wires around the whole drawing, without
+recognisable groups: the cost model sees every wire, but nothing in it says
+"these five parts are the MOSFET driver".
 
 **Tried and dropped: exact fine alignment with CP-SAT.** Model: integer
 positions, the arrangement is kept (per pair of parts one of the currently
@@ -112,28 +136,30 @@ improve readability. The local search already aligns with the full estimate
 ```
 text ─parse─▶ Schematic
   layout.engine.layout_schematic
-   1 netlist.py     merge nets sharing a pin, resolve pins,
-                    net weight from the number of terminals
-   2 placement.py   per sub-circuit and run:
-                      analytic start → polish → simulated annealing
-                      → polish   (runs in parallel processes)
-   3 engine.py      route every run for real (router.py); where pins stay
-                    open, widen corridors and route again; the cheapest
-                    drawing wins and is refined against the real objective
-   4 labels.py      net names
-   5 metrics.py     independent check + quality figures
+   1 netlist.py     merge nets sharing a pin, resolve pins
+   2 structure.py   net tags for supplies; islands; hub; functional blocks
+   3 engine.py      per block: annealing (placement.py), once per side its
+                    outside wires may leave on, computed on demand
+   4 engine.py      per island: arrange the blocks (ring around the core,
+                    the rest beside its partners), improve, polish;
+                    several trials, all routed for real, the best kept
+   5 engine.py      pack islands; route (router.py), widen corridors where
+                    a pin stays open; optional refinement (thorough)
+   6 labels.py      net names
+   7 metrics.py     independent check + quality figures
 render (svg.py)
 ```
 
 | Module | Responsibility |
 |---|---|
 | `config.py` | **the** cost model and the effort levels |
-| `shapes.py` | part geometry in grid units: variants (rotations), pins, text zones |
-| `netlist.py` | normalisation, net weights, bundles, sub-circuits |
+| `structure.py` | net tags, islands, hub, functional blocks |
+| `shapes.py` | part geometry in grid units: variants (rotations), pins, text zones, net tags |
+| `netlist.py` | normalisation, net weights, bundles |
 | `estimate.py` | route estimate: wire shapes, trunk model, crossings / conflicts |
-| `placement.py` | placement state with incremental cost, start, annealing, polish |
+| `placement.py` | placement state with incremental cost (block gaps, way out of a block), start, annealing, polish |
 | `router.py` | grid A*, hard rules, Steiner trees, rip-up and reroute, recovery |
-| `engine.py` | pipeline, candidate selection, corridor widening, refinement, output |
+| `engine.py` | pipeline, block layouts, arrangement, selection by routing, corridor widening, output |
 | `labels.py`, `metrics.py` | net names; checking and scoring |
 
 ### 3.1 Parts (`shapes.py`)
@@ -142,155 +168,153 @@ Everything is in integer grid units. Variants: two-pin symbols have four
 rotations, changeover switches two mirror images, image parts 0/±90° (never
 180°: upside-down photos are hard to read; only 0° with `rotatable: false`),
 boxes one variant. Declared pin sides are binding. Every part has a
-**footprint** made of body, terminals and text zones (pin labels of image
+**footprint** made of body, terminals, text zones (pin labels of image
 parts run *along* their own wire, outside the terminal; name and value of
-symbols).
+symbols) and **net tags**: a pin on a tagged net carries a stub (one grid
+step, on image parts long enough to clear the pin label) and a tag with the
+net name. The router may not cross a tag.
 
-### 3.2 Placement (`placement.py`)
+### 3.2 Structure (`structure.py`)
 
-**Variables:** position, variant, and **the side of every free box pin**.
-Pins on one side are ordered by the height of their partners (barycentre,
-which keeps a bundle from crossing itself); the side itself is an
-optimisation variable (annealing moves: flip a pin, flip a bundle, re-orient
-a box).
+1. **Net tags.** A ground net with 3 or more pins, a positive supply with 5
+   or more, and one with 4 that reaches three or more blocks become tags.
+   A supply with fewer pins stays a wire: it is usually the power path
+   itself (`BATT_VCC`, a converter output) and worth seeing.
+2. **Islands**: parts connected by the remaining (signal) wiring.
+3. **Hub**: the part whose connection strength (sum over its partners, a
+   k-terminal net counting 1/(k-1) per pair) is at least 1.5 times that of
+   any other part and that is wired to at least four parts. It becomes a
+   block of its own.
+4. **Blocks**: islands (without the hub) with fewer than six parts stay one
+   block; larger ones are split into modularity communities (greedy
+   agglomeration, then single-part moves while modularity improves;
+   deterministic, ties by input order).
 
-**Hard constraint:** at least `clearance` free grid lines between
-footprints (default 2: enough for the terminal fields of both sides).
+On test case 14 (`tests/cases/14_hub_blocks.txt`) this yields: the MCU as
+hub; pump driver (pump, MOSFET, gate resistor, pull-down, flyback diode);
+RS485 transceiver with termination and terminal; rain gauge with its RC
+filter; battery, fuel gauge and thermistor; fuse, converter and switch; SD
+card; soil sensor. GND, 3V3 and 5V are tags.
 
-**Objective:** sum of the estimated net costs + crossings, conflicts and
-side-by-side runs of unrelated nets + perimeter + rotation cost for image
-parts. Bundle mates may (and should) run side by side; sharing the same line
-costs only a quarter of a conflict (the router puts them on neighbouring
-tracks).
+### 3.3 Block layouts (`engine._layout_block`)
 
-**Estimate (`estimate.py`):**
+A block is placed by the annealing of `placement.py` on its own parts only
+(analytic start, polish, simulated annealing, polish; see below). The nets
+that leave the block get an extra term (`Layout._escape_cost`): from the
+best terminal of the net, a straight run to one side of the block's frame
+(length, the turns needed to point that way, bodies in the way). So a
+layout "facing left" has its outside wires at its left edge. Layouts are
+computed on demand per side, `block_restarts` runs each; the distinct
+results are kept, best estimate first.
 
-* Every pin-to-pin connection gets the cheapest shape that respects both pin
-  directions (straight, L, Z/U, 3 or 4 bends), with free coordinates taken
-  from midpoints and the edges of parts in the way.
-* Obstacles are part bodies **and** the grid points of foreign terminals and
-  the points directly in front of them: the same points the router blocks.
-  So estimate and router agree on what is allowed.
-* Nets with ≥ 3 terminals: the cheaper of a spanning tree (MST) and a
-  **single-trunk Steiner tree** (one straight trunk, branches straight, as an
-  L, or as a U around their own part). Without the trunk model the estimate
-  punishes exactly the tidy bus arrangement.
-* Between two nets, real crossings and **conflicts** count: the same line, or
-  a wire ending on a foreign wire. The router has to cross or detour there,
-  so a conflict costs as much as a crossing.
+**Annealing (unchanged from the flat engine, now per block).** Variables:
+position, variant, and the side of every free box pin (pins on a side
+ordered by the height of their partners). Hard constraint: `clearance` free
+grid lines between footprints, `block_gap` between parts of different
+blocks. Objective: estimated net costs (every connection the cheapest shape
+that respects both pin directions; multi-terminal nets the cheaper of a
+spanning tree and a single trunk) + crossings, conflicts, side-by-side runs
++ perimeter + rotation. Updated incrementally on every move; a test compares
+it with a full recomputation after every move.
 
-The cost is updated **incrementally** on every move (only nets near the
-moved parts). A test compares it with a full recomputation after every move;
-a difference would be a bug, not noise.
+### 3.4 Arrangement (`engine._Arranger`)
 
-**One run:**
+1. The **core** (the block most strongly wired to the others) is placed
+   first, in its natural orientation.
+2. **Ring** (single-part core with three or more partner blocks): every
+   block wired more strongly to the core than to any other block goes beside
+   the core, on the side where the core pins it uses are (majority weighted
+   like the connections), in the order of those pins along the side. Each
+   block has a target position: opposite its pins, slid so that as many of
+   its wires to the core as possible run straight. The positions of a column
+   are then solved together: in pin order, with the block gap between
+   neighbours, as near the targets as possible, weighted by how strongly
+   each block is wired to the core (weighted L1 isotonic regression, pool
+   adjacent violators). So an SD card on four SPI wires keeps its straight
+   bus, and a light sensor on one wire moves aside. Its layout is the one
+   facing the core. A box
+   core with free pins: blocks go to the shorter of the left and right
+   column, and the box pins are set to face their block *before* anything is
+   placed (turning them later would resize the box into its neighbours).
+3. **Everything else**, one block at a time (most strongly wired to what is
+   placed first): the cheapest spot beside a placed partner, all four sides,
+   each with the layout facing that partner, slid to make a wire straight,
+   centred or flush.
+4. **Improve**: blocks outside the ring move to better spots beside their
+   partners, ring blocks slide along their column, while the estimate gets
+   cheaper. Then the part-level **polish** (straighten connections, pin
+   sides).
 
-1. *Analytic start*: quadratic wire length with pin directions; every
-   connection pulls the partner's terminal to a point in front of its own pin
-   (both ways). Gauss-Seidel sweeps; every 10 sweeps the best variant per part
-   and provisional sides for free pins. Then legalisation (next free spot in
-   connection order). A constructive start (part by part at the cheapest
-   spot) measured clearly worse and was removed.
-2. *Polish* (steepest descent: straighten every connection, ±1 grid step,
-   variant, pin side).
-3. *Simulated annealing* over structured moves: shift; align a connection
-   (also "put it in front of the pin", and a whole straight-wired chain
-   together); move next to a neighbour; swap; rotate; shift a whole side of
-   the drawing; pin sides (single, as a bundle, a box together with its
-   partner boxes, since otherwise both ends of a bundle stay the wrong way
-   round because each half alone would be worse). Start temperature from the
-   mean uphill step, geometric cooling, the best state is kept.
-4. *Polish* again, so every connection that can be made straight by aligning
-   is.
+**Selection by routing.** The estimate misjudges long wires in large
+drawings (on a 19-part project, "improve" lowered the estimate from 903 to 675
+while the routed cost rose from 751 to 888). So the arrangement as placed,
+as polished and as improved are all routed for real and the cheapest wins;
+`arrange_trials` repeat this with the second- and third-best block layouts.
+Routing costs about a second for 19 parts, the annealing of blocks is shared
+between trials.
 
-### 3.3 Routing (`router.py`)
+### 3.5 Routing (`router.py`)
 
 A* on the 20 px grid over states (node, heading), costs from `Weights`. Hard
-rules: no body, no foreign terminal, no point in front of a foreign pin; pins
-are left straight; no shared wire segments; foreign nets share a point only
-as a straight, perpendicular crossing; no loops, no four-way joins.
-Multi-terminal nets grow as a Steiner tree (next terminal to the nearest
-valid tree node). Bundles are routed one after another; a bundle member pays
-for every step without a routed mate directly alongside, foreign wires at
-20 px cost, the second field in front of a foreign pin costs (so pins are not
-boxed in). Terminals that cannot be connected trigger conflict recovery
-(search with high penalties instead of prohibitions, rip up exactly the
-blocking nets, route again), after the rip-up passes, as long as a pin is
-open.
+rules: no body, no tag, no foreign terminal, no point in front of a foreign
+pin; pins are left straight; no shared wire segments; foreign nets share a
+point only as a straight, perpendicular crossing; no loops, no four-way
+joins. Multi-terminal nets grow as a Steiner tree (next terminal to the
+nearest valid tree node). Bundles are routed one after another; a bundle
+member pays for every step without a routed mate directly alongside,
+foreign wires at 20 px cost, the second field in front of a foreign pin
+costs (so pins are not boxed in). Terminals that cannot be connected
+trigger conflict recovery (search with high penalties instead of
+prohibitions, rip up exactly the blocking nets, route again).
 
 If a pin stays open, the engine **widens corridors**: at a free cut line in
 front of the pin, grid lines are inserted (everything beyond the line moves
 away). This keeps every alignment exactly and cannot create overlaps. The
 last resort spreads all gaps evenly.
 
-### 3.4 Selection
+### 3.6 Refinement (`thorough`)
 
-`restarts` runs with different seeds, in parallel processes (`fork`; results
-are collected in a fixed order, so the outcome equals a sequential run).
-**Every** run is routed for real and scored with the report's figures; the
-cheapest drawing wins. Deterministic: fixed seeds, input order rather than
-hash or name order.
+Annealing moves are sampled on the finished drawing, the `refine_batch`
+with the best estimate are routed for real (quickly: no widening, no
+repair), and the best is kept if the routed drawing gets cheaper; it stops
+after `refine_patience` rounds without improvement. Parts keep the block
+gap, so refinement cannot dissolve the groups.
 
-Why route them all: the estimate predicts the routed quality only roughly.
-Example `03_dense_network`, 12 runs: the lowest estimate (338) routes to 454,
-an estimate of 415 routes to 350. The differences come mostly from
-multi-terminal nets (trunk model vs. the actual Steiner tree) and from
-bundles whose pin order does not match at both ends. Routing, on the other
-hand, costs only about a tenth of a placement run (dense: 0.8 s vs. 11 s).
+### 3.7 Effort levels and running time
 
-It also follows that **many shorter runs beat a few long ones.** Measured
-over all 19 inputs (sum, same weights, `balanced` budget):
+Everything runs in one process (the flat engine forked parallel processes on
+Linux only; on Windows its runs were sequential).
 
-| Variant | Cost | Crossings | Bends | Time |
-|---|---:|---:|---:|---:|
-| 6 × 1000 moves, best 3 routed | 4191 | 112 | 328 | 173 s |
-| 6 × 1000, all routed | 4147 | 110 | 314 | 184 s |
-| 14 × 700, all routed | 4047 | 102 | 308 | 287 s |
-| **14 × 500, all routed (current)** | **4043** | **102** | **296** | 210 s |
+| Level | Runs per block | Moves per part (min. per run) | Trials | Refinement | test case 14 (21 parts) |
+|---|---:|---:|---:|---|---:|
+| `fast` | 2 | 150 (800) | 2 | – | ~4 s |
+| `balanced` | 3 | 300 (2000) | 3 | – | ~11 s |
+| `thorough` | 6 | 800 (5000) | 8 | 20 rounds | ~43 s |
 
-Single cases vary a lot between variants (seed lottery); the sum is what is
-meaningful.
+Wall-clock times on a four-core Intel i3-10100 under Windows (note:
+`time.process_time()` under-reports by about 4x on that machine, measure
+wall time). Flat engine on the same machine, `fast`: about 49 s.
 
-### 3.5 Refining the finished drawing
+Over all examples and test cases (18 inputs; cost with the
+same weights, but tagged supplies have no wire cost, so compare crossings
+and bends):
 
-The estimate steers the annealing, but the result is measured on the routed
-drawing. So the winner is finally improved **against the real objective**
-(`engine._refine`):
-
-1. On the winning placement, annealing moves are sampled; per round the
-   `refine_batch` with the best estimate are **routed for real** (in
-   parallel) and scored with the report figures.
-2. The best change is kept if the finished drawing gets cheaper; otherwise
-   the round counts as unsuccessful. After `refine_patience` unsuccessful
-   rounds (or `refine_rounds`) it stops.
-3. Candidates are routed *quickly*: without corridor widening and without
-   conflict repair. A candidate with an open pin loses anyway, and if
-   everything routes directly, the result is identical to full routing. This
-   halves the time (dense: 47 → 29 s), because a few hard-to-route candidates
-   would otherwise hold up the whole round.
-
-Effect (sum over 19 inputs):
-
-| Level | without → with refinement | Crossings | Time |
+| | Cost | Crossings | Bends |
 |---|---:|---:|---:|
-| `fast` | 4962 → 4538 | 131 → 121 | 42 → 55 s |
-| `balanced` | 4043 → 3808 | 102 → 90 | 210 → 299 s |
+| flat engine, `fast` | 3305 | 75 | 260 |
+| hierarchical, `fast` | 1698 | 24 | 138 |
+| hierarchical, `balanced` | 1653 | 17 | 139 |
 
-| Level | Runs | Moves per part | Refinement (rounds / per round / patience) | 19 parts |
-|---|---:|---:|---:|---:|
-| `fast` | 2 | 300 | 4 / 7 / 1 | ~20 s |
-| `balanced` | 14 | 500 | 15 / 14 / 3 | ~2 min |
-| `thorough` | 28 | 1500 | 60 / 14 / 6 | ~9 min |
-
-`thorough` pays off clearly for dense circuits (compared to `balanced`):
-`03_dense_network` 286 → 240, `13_functional_regions` 281 → 216.
+`balanced` is not uniformly better than `fast` per input (other block
+layouts, other trials); the selection by routing keeps both close to their
+best. `scripts/layout_report.py` compares any two revisions.
 
 ## 4. Quality check (`metrics.py`)
 
 Computed from the emitted geometry, independently of the router: wires are
 split into grid edges. Violations: open terminals, shared edges, ambiguous
-contacts, wires through parts, contact with a foreign terminal, overlapping
-parts, diagonal wires. Figures: crossings, bends, length, junctions,
+contacts, wires through parts or net tags, contact with a foreign terminal,
+overlapping parts, diagonal wires. Figures: crossings, bends, length, junctions,
 straight two-terminal connections, bundle cohesion (share of bundle wire
 directly beside a mate), steps beside foreign wires, cost (same weights) and
 a readability score from 0 to 100 (for humans only).
@@ -304,37 +328,40 @@ cases, with images side by side.
 | File | Checks |
 |---|---|
 | `test_estimate.py` | wire shapes, obstacles, pin fronts, fold-backs, crossings / conflicts, trunk model |
-| `test_placement.py` | incremental cost equals recomputation (for every move type), clearance invariant, pin sides as variables |
+| `test_placement.py` | incremental cost equals recomputation (for every move type, also with block gaps and the way out of a block), clearance invariant, pin sides as variables |
 | `test_router.py` | hard rules on hand-made examples, honest failure, tree structure |
 | `test_engine.py` | every example and test case without violations, on the grid, labels clear, SVG; straight chain; bundles; names without influence; same SVG across processes with different hash seeds |
+| `test_structure.py` | supply recognition, hub and blocks from the wiring (also with other part names), buses and local supplies stay wires, tags instead of supply wires, gaps between blocks, blocks on the side of their pins |
 
 The full runs over every input are marked `slow`: `uv run pytest -m "not
 slow"` skips them.
 
 ## 6. Limits and next steps
 
-* **Running time.** Pure Python. `fast` takes about 10–20 s for 19 parts,
-  `balanced` ~2 min, `thorough` ~9 min. The live editor uses `fast` by
-  default.
-* **Estimate vs. routing.** The estimate handles multi-terminal nets and
-  bundles with mismatched pin order poorly; selection compensates by routing
-  every run and by refinement. A more accurate estimate would improve the
-  annealing itself and shorten refinement.
-* **Search noise.** Annealing is stochastic (deterministic per seed); single
-  runs vary by ±15–20 % in cost. More runs (`thorough`) smooth this out.
-* **Exact fine alignment.** For a fixed coarse arrangement, "which
-  connections can be straight at the same time" is a small integer problem;
-  OR-Tools CP-SAT could solve it exactly (a new dependency, so not done).
-* **Supplies as symbols.** Ground and supplies are drawn as wires (this is
-  wiring documentation). An optional mode with supply symbols instead of
-  wires would relieve large drawings a lot; it would have to be an explicit
-  choice in the input (per net), not a naming rule.
-* **Rip-up** judges each net on its own; a negotiating variant (PathFinder
-  with history costs) would be more robust in very dense corridors.
+* **Buses on stacked modules.** Free box pins only go left or right. A bus
+  running past three modules stacked in a column therefore crosses itself
+  at every module (`esp32_sensors_bus`: 6 crossings). Free pins on the top
+  or bottom of a box would allow the classic drawing: a horizontal bus with
+  the modules hanging below it.
+* **Estimate vs. routing.** The estimate handles long wires, multi-terminal
+  nets and mismatched bundle order poorly; selection by routing
+  compensates. A more accurate estimate would let the block moves rely on
+  it.
+* **Block layouts** sometimes route a wire around a part of the same block
+  (a box whose pin faces the wrong way); more runs (`thorough`) help.
+* **Tags by name.** Which nets become tags is decided by name
+  (`colors.supply_kind`) and terminal count. An explicit choice in the input
+  ("draw this net as tags" / "as a wire") would be the next step for the
+  cases the rule gets wrong.
+* **Signal flow.** `->` / `<-` in the input give directions; they are not
+  used yet. They could order blocks (sources left, loads right) where there
+  is no hub.
 
 ## References
 
+* Ayer, Brunk, Ewing, Reid, Silverman. *An Empirical Distribution Function for Sampling with Incomplete Information.* Ann. Math. Statist. 26(4), 1955 (pool adjacent violators).
 * Benkert, Nöllenburg, Uno, Wolff. *Minimizing Intra-Edge Crossings in Wiring Diagrams and Public Transportation Maps.* GD 2006.
+* Clauset, Newman, Moore. *Finding community structure in very large networks.* Phys. Rev. E 70, 2004.
 * Davidson, Harel. *Drawing Graphs Nicely Using Simulated Annealing.* ACM TOG 15(4), 1996.
 * Hanan. *On Steiner's Problem with Rectilinear Distance.* SIAM J. Appl. Math. 14, 1966.
 * Hart, Nilsson, Raphael. *A Formal Basis for the Heuristic Determination of Minimum Cost Paths.* IEEE SSC 4(2), 1968.
@@ -342,6 +369,7 @@ slow"` skips them.
 * Kirkpatrick, Gelatt, Vecchi. *Optimization by Simulated Annealing.* Science 220, 1983.
 * McMurchie, Ebeling. *PathFinder: A Negotiation-Based Performance-Driven Router for FPGAs.* FPGA 1995.
 * Mutzel, Weiskircher. *Bend Minimization in Orthogonal Drawings Using Integer Programming.* <https://www.ac.tuwien.ac.at/files/pub/Mutzel02b.pdf>
+* Newman, Girvan. *Finding and evaluating community structure in networks.* Phys. Rev. E 69, 2004.
 * Nöllenburg, Wolff. *Drawing and Labeling High-Quality Metro Maps by Mixed-Integer Programming.* IEEE TVCG 17(5), 2011.
 * Purchase. *Which Aesthetic Has the Greatest Effect on Human Understanding?* GD 1997.
 * Schulze, Spönemann, von Hanxleden. *Drawing Layered Graphs with Port Constraints.* JVLC 2014. <https://rtsys.informatik.uni-kiel.de/~biblio/downloads/papers/jvlc13.pdf>

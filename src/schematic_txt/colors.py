@@ -2,8 +2,14 @@
 
 The *only* place where a net name is interpreted: ground nets are drawn black
 (slate on the dark theme) and positive supply nets red.  Every other net gets
-a stable colour from a palette, chosen from the net's name hash -- colours
-never influence placement or routing.
+a stable colour from a palette, chosen from the net's name hash.
+
+The same classification tells the layout which nets are supplies
+(``supply_kind``): a supply with many terminals is drawn as a tag at every pin
+instead of a wire (see ``layout.structure``).  Structure alone cannot tell a
+supply from a bus -- both join many parts -- so this is the one decision
+the layout takes from a name, as every schematic editor does with its power
+symbols.
 """
 
 from __future__ import annotations
@@ -55,6 +61,18 @@ def _category(name: str) -> str:
     if any(t in _POSITIVE_TOKENS or _VOLTAGE.match(t) for t in toks):
         return "positive"
     return "signal"
+
+
+def supply_kind(name: str) -> str | None:
+    """``"ground"``, ``"positive"`` or ``None`` (a signal), judged by the net
+    name.  Stricter than the colour: ``LIGHT_NEG`` (a switched low side) may
+    be drawn like ground but is not ground."""
+    cat = _category(name)
+    if cat == "ground":
+        toks = [t for t in _TOKEN.split(name.upper()) if t]
+        if not any(t in _GROUND_TOKENS - {"NEG"} or t.endswith("GND") or t.startswith("GND") for t in toks):
+            return None
+    return None if cat == "signal" else cat
 
 
 def net_color(name: str, dark_theme: bool = True, category: str | None = None) -> str:

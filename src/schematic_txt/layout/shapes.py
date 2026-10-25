@@ -19,6 +19,10 @@ A component can have several *variants*:
 * boxes: one variant -- their free pins are assigned to sides from geometry
   (``placement.Layout.geo_sides``) and then optimised; declared sides are fixed.
 
+A pin on a net drawn as tags (supply, ground; see ``structure``) carries its
+tag with it: a short stub straight out of the pin and the tag with the net
+name.  The tag belongs to the footprint like any text.
+
 Nothing here looks at names except to measure the width of text.
 """
 
@@ -56,6 +60,8 @@ CHAR_TITLE = 6.6  # 10-11 px bold sans
 CHAR_VALUE = 5.6  # 9 px mono
 CHAR_PIN_BOX = 6.2  # 10 px mono (box pin names)
 CHAR_PIN_TAG = 5.0  # 8 px mono (image part pin tags)
+CHAR_NET_TAG = 5.6  # 9 px mono bold (net tags)
+NET_TAG_H = 0.8  # height of a net tag (16 px)
 
 Box = tuple[float, float, float, float]  # x0, y0, x1, y1 in grid units
 
@@ -71,6 +77,19 @@ class PinShape:
     order: int = 0
 
 
+@dataclass(frozen=True)
+class TagShape:
+    """A net tag in front of a pin: stub from the terminal to ``(sx, sy)``,
+    then the tag; ``box`` covers stub and tag."""
+
+    pin: str
+    net: str
+    side: Side
+    sx: float
+    sy: float
+    box: Box
+
+
 @dataclass
 class Shape:
     w: int
@@ -79,6 +98,7 @@ class Shape:
     text: list[Box] = field(default_factory=list)  # text zones (soft obstacles)
     rotation: int = 0  # image rotation in degrees
     vertical: bool = False  # two-pin symbol drawn vertically
+    tags: dict[str, TagShape] = field(default_factory=dict)  # pin id -> net tag
 
     def __post_init__(self) -> None:
         xs = [0.0, float(self.w)]
@@ -86,7 +106,7 @@ class Shape:
         for p in self.pins.values():
             xs.append(float(p.tx))
             ys.append(float(p.ty))
-        for b in self.text:
+        for b in [*self.text, *(t.box for t in self.tags.values())]:
             xs += [b[0], b[2]]
             ys += [b[1], b[3]]
         # Footprint: everything the component draws, in whole grid cells.
@@ -365,6 +385,42 @@ def box_shape(comp: Component, sides: dict[str, Side], orders: dict[str, float])
         x = 2 + i
         pins[p.id] = PinShape(p.id, x, h + 1, x, h, Side.BOTTOM, i)
     return Shape(w, h, pins, [])
+
+
+# --------------------------------------------------------------- net tags
+def net_tag_width(net: str) -> float:
+    return _text_w(net, CHAR_NET_TAG) + 0.5
+
+
+def with_tags(shape: Shape, comp: Component, tags: dict[str, str]) -> Shape:
+    """``shape`` with a net tag in front of every pin in ``tags`` (pin id ->
+    net name).  The stub is one grid step, on image parts long enough to
+    clear the pin name written along the wire."""
+    if not tags:
+        return shape
+    out: dict[str, TagShape] = {}
+    for pid, net in tags.items():
+        ps = shape.pins.get(pid)
+        if ps is None:
+            continue
+        stub = 1
+        if comp.image:
+            stub = math.ceil(_text_w(comp.pins[pid].display_name, CHAR_PIN_TAG) + 0.6)
+        tw = net_tag_width(net)
+        half = NET_TAG_H / 2.0
+        tx, ty = ps.tx, ps.ty
+        dx, dy = VEC[ps.side]
+        sx, sy = tx + dx * stub, ty + dy * stub
+        if ps.side == Side.RIGHT:
+            box = (tx, ty - half, sx + tw, ty + half)
+        elif ps.side == Side.LEFT:
+            box = (sx - tw, ty - half, tx, ty + half)
+        elif ps.side == Side.TOP:
+            box = (tx - tw / 2.0, sy - NET_TAG_H, tx + tw / 2.0, ty)
+        else:
+            box = (tx - tw / 2.0, ty, tx + tw / 2.0, sy + NET_TAG_H)
+        out[pid] = TagShape(pid, net, ps.side, float(sx), float(sy), box)
+    return Shape(shape.w, shape.h, shape.pins, shape.text, shape.rotation, shape.vertical, out)
 
 
 # ------------------------------------------------------------- write-back

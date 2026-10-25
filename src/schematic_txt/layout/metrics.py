@@ -32,6 +32,7 @@ class QualityReport:
     bends: int = 0
     crossings: int = 0
     junctions: int = 0
+    net_tags: int = 0  # pins carrying a net tag instead of a wire
     straight_connections: int = 0  # two-terminal nets drawn as one straight wire
     two_terminal_nets: int = 0
     max_bends_single_net: int = 0
@@ -63,6 +64,7 @@ class QualityReport:
             ("Bends", f"{self.bends} (max {self.max_bends_single_net} in one net)"),
             ("Crossings", str(self.crossings)),
             ("Junction dots", str(self.junctions)),
+            ("Net tags", str(self.net_tags)),
             ("Straight 2-pin connections", f"{self.straight_connections} / {self.two_terminal_nets}"),
             ("Bundles / cohesion", f"{self.bundles} / {self.bundle_cohesion:.2f}"),
             ("Steps beside unrelated wires", str(self.near_unrelated)),
@@ -91,10 +93,14 @@ def evaluate(sch: Schematic, nl: Netlist | None = None, weights: Weights | None 
     """Scores any placed and routed schematic (also one produced by another
     engine version, see ``scripts/layout_report.py``)."""
     weights = weights or Weights()
+    tagged: dict[str, set[tuple[str, str]]] = {}
+    for tag in sch.net_tags:
+        tagged.setdefault(tag.net_name, set()).add((tag.component_id, tag.pin_id))
     if nl is None:
-        nl = build_netlist(sch, weights)
-    r = QualityReport(components=len(sch.components), nets=len(nl.nets))
-    r.connections = sum(len(n.terminals) - 1 for n in nl.nets)
+        nl = build_netlist(sch, weights, symbols=set(tagged))
+    r = QualityReport(components=len(sch.components), nets=len(nl.nets) + len(tagged))
+    r.connections = sum(len(n.terminals) - 1 for n in nl.nets) + sum(len(t) - 1 for t in tagged.values())
+    r.net_tags = sum(len(t) for t in tagged.values())
     viol = {
         "unconnected_terminals": 0,
         "shared_edges": 0,
@@ -103,6 +109,7 @@ def evaluate(sch: Schematic, nl: Netlist | None = None, weights: Weights | None 
         "foreign_terminal_contact": 0,
         "component_overlaps": 0,
         "non_orthogonal": 0,
+        "wire_through_tag": 0,
     }
     for w in sch.wires:
         if not (w.is_horizontal or w.is_vertical):
@@ -174,6 +181,11 @@ def evaluate(sch: Schematic, nl: Netlist | None = None, weights: Weights | None 
         for b in bodies[i + 1 :]:
             if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
                 viol["component_overlaps"] += 1
+    for tag in sch.net_tags:
+        x0, y0, x1, y1 = (v / G for v in tag.box)
+        for n in use:
+            if x0 <= n[0] <= x1 and y0 <= n[1] <= y1:
+                viol["wire_through_tag"] += 1
     # connectivity per net
     for info in nl.nets:
         es = edges.get(info.name, set())

@@ -56,6 +56,37 @@ def test_incremental_total_equals_full_recompute(path):
     assert checked > 100
 
 
+def test_incremental_total_with_blocks_and_escape():
+    """Block gaps and the way out of a block are part of the cost the
+    annealing trusts: also checked against a full recomputation."""
+    _, cfg, nl, models, parts = _setup("tests/cases/08_clusters.txt")
+    block_of = {p: (0 if p in ("Display", "Encoder") else 1) for p in parts}
+    inner = [p for p in parts if block_of[p] == 1]
+    escape = {
+        n: Side.RIGHT
+        for p in inner
+        for n in nl.part_nets[p]
+        if any(block_of[q] == 0 for q in nl.nets[n].parts)
+    }
+    for layout in (
+        Layout(models, nl, cfg, parts, block_of=block_of),
+        Layout(models, nl, cfg, inner, escape=escape),
+    ):
+        placer = Placer(layout, random.Random(7))
+        placer.analytic(construction_order(layout.parts, nl), 6.0, 3.0)
+        rng = random.Random(3)
+        for _ in range(300):
+            mv = placer._random_move()
+            if not mv:
+                continue
+            res = layout.apply(mv[0], sides=mv[1])
+            if res is None:
+                continue
+            if rng.random() < 0.5:
+                layout.revert(res[1])
+            assert layout.total == pytest.approx(layout.recompute(), abs=1e-6)
+
+
 def test_placed_parts_keep_their_clearance():
     for seed in (5, 6):
         _, cfg, nl, models, parts = _setup("examples/esp32_sensors_bus.txt")
