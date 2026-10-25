@@ -61,9 +61,17 @@ Without a name, common signal pins (`GND`, `3V3`, `5V`, `VCC`, `VIN`, `SDA`,
 `SCL`, `MISO`, `MOSI`, `SCK`, `CS`, `RST`, `TX`, `RX`) name the net after the
 source pin; other nets get an internal name and no label.
 
-Names never change the layout. They only pick a colour: ground nets
-(`GND`, `VSS`, `AGND`, ...) are grey, supplies (`VCC`, `3V3`, `5V`, `VBAT`,
-...) red, everything else a stable colour per name.
+Names pick a colour: ground nets (`GND`, `VSS`, `AGND`, ...) are grey,
+supplies (`VCC`, `3V3`, `5V`, `VBAT`, ...) red, everything else a stable
+colour per name.
+
+The same names decide one thing about the layout: a ground net with three
+or more pins, and a supply with five or more (or four that reach three
+functional groups), is drawn as a small tag with the net name at each of
+its pins instead of a wire running to every corner of the drawing. A
+supply with fewer pins, usually the power path itself, stays a wire.
+Everything else in the layout, including which parts form a group, comes
+from the wiring alone.
 
 ## Parts
 

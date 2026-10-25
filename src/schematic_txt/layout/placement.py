@@ -7,14 +7,17 @@ mirror, see ``shapes``) and, for boxes, the side of every free pin.  Pins on
 one side are ordered by the height of their peers (barycentric ordering), so
 a bundle leaves a box without crossing itself.
 
-Hard constraint: footprints (body, terminals, text) keep ``clearance`` free
-grid lines between each other.
+Hard constraint: footprints (body, terminals, text, net tags) keep
+``clearance`` free grid lines between each other, ``block_gap`` between
+parts of different functional blocks.
 
 Objective: the estimated routing cost of the drawing (``estimate.route`` for
 every connection, multi-terminal nets as the cheaper of a minimum spanning
 tree and a single trunk) plus crossings, conflicts and side-by-side runs of
 unrelated nets, plus a small perimeter term -- with the weights from
-``config.Weights`` that also drive the router and score the result.
+``config.Weights`` that also drive the router and score the result.  When
+one block of a larger drawing is laid out on its own, nets that leave it
+also pay for their way out to one side (``escape``).
 
 Method
 ------
@@ -54,6 +57,7 @@ from schematic_txt.layout.shapes import (
     shunt_roles,
     switch3_shape,
     symbol2_shape,
+    with_tags,
 )
 from schematic_txt.models import Component, Side
 
@@ -64,9 +68,10 @@ Pos = tuple[int, int]
 class PartModel:
     """Shapes of one component in all its variants."""
 
-    def __init__(self, comp: Component):
+    def __init__(self, comp: Component, tags: dict[str, str] | None = None):
         self.comp = comp
         self.id = comp.id
+        self.tags = dict(tags or {})  # pin id -> net drawn as a tag
         self.kind = classify(comp)
         self._cache: dict[object, Shape] = {}
         self.free: list[str] = []
@@ -100,7 +105,7 @@ class PartModel:
     def __reduce__(self):
         # rebuilt from the component in worker processes, so the shape
         # cache is not shipped along (it refills itself)
-        return (PartModel, (self.comp,))
+        return (PartModel, (self.comp, self.tags))
 
     def _matches(self, shape: Shape) -> bool:
         return all(shape.pins[p.id].side == p.side for p in self.comp.pins.values() if p.side_specified)
@@ -148,6 +153,7 @@ class PartModel:
                 sides.setdefault(pid, Side.LEFT)
                 orders.setdefault(pid, 1e6)
             s = box_shape(self.comp, sides, orders)
+        s = with_tags(s, self.comp, self.tags)
         self._cache[key] = s
         return s
 
@@ -190,7 +196,13 @@ class Layout:
     """Placement state with an incrementally maintained estimated cost."""
 
     def __init__(
-        self, models: dict[str, PartModel], netlist: Netlist, cfg: LayoutConfig, parts: Sequence[str]
+        self,
+        models: dict[str, PartModel],
+        netlist: Netlist,
+        cfg: LayoutConfig,
+        parts: Sequence[str],
+        block_of: dict[str, int] | None = None,
+        escape: dict[int, Side] | None = None,
     ):
         self.models = models
         self.nl = netlist
@@ -198,6 +210,11 @@ class Layout:
         self.w = cfg.weights
         self.parts = list(parts)
         self.part_set = set(parts)
+        # parts of different blocks keep ``block_gap`` apart
+        self.block_of = block_of or {}
+        # nets that leave this part set, and the side of the drawing they
+        # should leave on (laying out one block of a larger drawing)
+        self.escape = escape or {}
         self.nets = sorted({n for p in parts for n in netlist.part_nets.get(p, [])})
         self.active: set[str] = set()
         self.pos: dict[str, Pos] = {}
@@ -248,11 +265,13 @@ class Layout:
         return (f[0] - 1, f[1] - 1, f[2] + 1, f[3] + 1)
 
     def legal(self, p: str, others: Iterable[str] | None = None) -> bool:
-        c = self.cfg.clearance
+        c0 = self.cfg.clearance
         a = self.foot(p)
+        bp = self.block_of.get(p)
         for q in others if others is not None else self.placed():
             if q == p or q not in self.active:
                 continue
+            c = c0 if bp is None or self.block_of.get(q) == bp else self.cfg.block_gap
             b = self.foot(q)
             if a[0] - c <= b[2] and b[0] - c <= a[2] and a[1] - c <= b[3] and b[1] - c <= a[3]:
                 return False
@@ -335,6 +354,11 @@ class Layout:
         allm: list[tuple[int, Pt]] = []
         for p in self.placed():
             x, y = self.pos[p]
+            for tag in self.shape[p].tags.values():
+                b = tag.box
+                for ty in range(math.ceil(y + b[1]), math.floor(y + b[3]) + 1):
+                    for tx in range(math.ceil(x + b[0]), math.floor(x + b[2]) + 1):
+                        allm.append((-1, (tx, ty)))
             for pid, ps in self.shape[p].pins.items():
                 n = self.nl.pin_net.get((p, pid), -1)
                 tx, ty = x + ps.tx, y + ps.ty
@@ -430,17 +454,65 @@ class Layout:
         return self.w.crossing * c * f + self.w.overlap * o * f + self.w.near * adj
 
     def _perimeter(self) -> float:
-        """Drawing-wide terms: perimeter and turned image parts."""
+        """Drawing-wide terms: perimeter, turned image parts and the way out
+        for nets that leave the part set (``escape``)."""
         if not self.active:
             return 0.0
         fs = [self.foot(p) for p in self.active]
-        cost = self.w.perimeter * (
-            (max(f[2] for f in fs) - min(f[0] for f in fs)) + (max(f[3] for f in fs) - min(f[1] for f in fs))
-        )
+        x0, y0 = min(f[0] for f in fs), min(f[1] for f in fs)
+        x1, y1 = max(f[2] for f in fs), max(f[3] for f in fs)
+        cost = self.w.perimeter * ((x1 - x0) + (y1 - y0))
         for p in self.placed():
             if self.models[p].kind == "image" and self.var[p]:
                 cost += self.w.rotation
+        if self.escape:
+            cost += self._escape_cost((x0, y0, x1, y1))
         return cost
+
+    def _escape_cost(self, frame: Rect) -> float:
+        """Every net that continues outside this part set must get out on its
+        side: priced as a straight run from its best terminal to that edge
+        of the drawing (length, the turns needed to point that way, bodies
+        in the way)."""
+        w = self.w
+        bodies = [(p, self.body(p)) for p in self.placed()]
+        total = 0.0
+        for n, side in self.escape.items():
+            vx, vy = VEC[side]
+            best = math.inf
+            for q, qp in self.nl.nets[n].terminals:
+                if q not in self.active:
+                    continue
+                (tx, ty), (dx, dy) = self.terminal(q, qp)
+                turns = 0 if (dx, dy) == (vx, vy) else (2 if (dx, dy) == (-vx, -vy) else 1)
+                if turns:
+                    tx, ty = tx + dx, ty + dy
+                if side == Side.LEFT:
+                    dist = tx - frame[0]
+                    ray = (frame[0], ty, tx, ty)
+                elif side == Side.RIGHT:
+                    dist = frame[2] - tx
+                    ray = (tx, ty, frame[2], ty)
+                elif side == Side.TOP:
+                    dist = ty - frame[1]
+                    ray = (tx, frame[1], tx, ty)
+                else:
+                    dist = frame[3] - ty
+                    ray = (tx, ty, tx, frame[3])
+                blocked = 0
+                for p, b in bodies:
+                    if p == q and not turns:
+                        continue
+                    if ray[1] == ray[3]:
+                        if b[1] <= ray[1] <= b[3] and max(ray[0], b[0]) < min(ray[2], b[2]):
+                            blocked += 1
+                    elif b[0] <= ray[0] <= b[2] and max(ray[1], b[1]) < min(ray[3], b[3]):
+                        blocked += 1
+                c = w.length * max(0, dist) + w.bend * turns + w.obstacle * blocked
+                best = min(best, c)
+            if best < math.inf:
+                total += best
+        return total
 
     def _rects(self) -> tuple[list[Rect], dict[str, Rect]]:
         owner = {p: self.body(p) for p in self.active}

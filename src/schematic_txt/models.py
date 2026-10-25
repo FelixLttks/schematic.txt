@@ -452,6 +452,21 @@ class NetLabel:
 
 
 @dataclass
+class NetTag:
+    """A net drawn as a tag at one pin (supply, ground): a stub from the pin
+    terminal to ``stub_end``, then a tag with the net name.  ``box`` covers
+    stub and tag (x0, y0, x1, y1 in px)."""
+
+    net_name: str
+    component_id: str
+    pin_id: str
+    terminal: Point
+    stub_end: Point
+    side: Side
+    box: tuple[float, float, float, float]
+
+
+@dataclass
 class PartTemplate:
     name: str
     image: str = ""
@@ -477,6 +492,7 @@ class Schematic:
     width: float = 1200.0
     height: float = 800.0
     labels: list[NetLabel] = field(default_factory=list)
+    net_tags: list[NetTag] = field(default_factory=list)
 
     def get_or_create_part(self, name: str) -> PartTemplate:
         if name not in self.parts:

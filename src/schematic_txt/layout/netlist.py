@@ -6,6 +6,8 @@
 * Each net gets a weight from its structure only: nets with many terminals
   (``rail_min_terminals``) are *distribution nets*.  They are still drawn as
   wires, but their bends and length weigh less than those of signals.
+* Nets drawn as tags (chosen in ``structure``) are left out of the wiring;
+  their pins are listed in ``symbol_pins``.
 
 Names (of nets, pins or parts) are never interpreted here.
 """
@@ -39,6 +41,11 @@ class Netlist:
     part_nets: dict[str, list[int]] = field(default_factory=dict)  # component -> net indices
     neighbors: dict[str, dict[str, float]] = field(default_factory=dict)  # connection strength
     bundles: list[list[int]] = field(default_factory=list)  # net indices per bundle
+    symbol_pins: dict[Terminal, str] = field(default_factory=dict)  # terminal -> net drawn as tags
+
+    def symbols_of(self, part: str) -> dict[str, str]:
+        """pin id -> net name of the part's pins that carry a net tag."""
+        return {pid: name for (c, pid), name in self.symbol_pins.items() if c == part}
 
     def groups(self, parts: list[str]) -> list[list[str]]:
         """Connected sub-circuits (components joined by any net), in input order."""
@@ -110,12 +117,24 @@ def merge_shared_pin_nets(schematic: Schematic) -> dict[str, str]:
     return renamed
 
 
-def build_netlist(schematic: Schematic, weights: Weights) -> Netlist:
+def build_netlist(
+    schematic: Schematic, weights: Weights, symbols: set[str] | frozenset[str] = frozenset()
+) -> Netlist:
+    """Nets named in ``symbols`` are drawn as tags at their pins, not as
+    wires: they are left out (their pins appear in ``symbol_pins``)."""
     nl = Netlist()
     for comp_id in schematic.components:
         nl.part_nets[comp_id] = []
         nl.neighbors[comp_id] = {}
     for net in schematic.nets:
+        if net.name in symbols:
+            for conn in net.connections:
+                comp = schematic.components.get(conn.component_id)
+                pin = comp.get_pin(conn.pin_id or conn.pin_name) if comp else None
+                if pin is not None:
+                    conn.pin_id = pin.id
+                    nl.symbol_pins[(comp.id, pin.id)] = net.name
+            continue
         terms: dict[Terminal, None] = {}
         for conn in net.connections:
             comp = schematic.components.get(conn.component_id)

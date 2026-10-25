@@ -54,7 +54,7 @@ LANGUAGE = "schematic"
 DEFAULT_OUT_DIR = "schematics"
 # Part of every image name.  Increase it whenever a release draws the same
 # source differently, so that `--check` reports the old images as stale.
-OUTPUT_VERSION = 2
+OUTPUT_VERSION = 3
 
 MARKER = "<!-- schematic.txt: image rendered from the source below; edit the source, not the image -->"
 # the generated wrapper, apart from the two image lines

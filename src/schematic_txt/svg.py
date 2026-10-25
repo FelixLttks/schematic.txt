@@ -1,7 +1,7 @@
 """SVG renderer for placed and routed schematics.
 
 Layers (bottom to top): background grid, wires, junction dots, components,
-net labels.  Wire colours encode the net's semantic class (ground grey,
+net tags, net labels.  Wire colours encode the net's semantic class (ground grey,
 supplies red, other nets a stable hue each) and are resolved per theme from
 ``schematic_txt.colors``.
 
@@ -25,7 +25,7 @@ from pathlib import Path
 from schematic_txt.colors import net_color
 from schematic_txt.errors import ImageError
 from schematic_txt.layout.shapes import is_vertical_symbol, mosfet_roles
-from schematic_txt.models import Component, Pin, Schematic, Side
+from schematic_txt.models import Component, NetTag, Pin, Schematic, Side
 
 THEMES = ("light", "dark")
 FONT_SANS = "system-ui, -apple-system, sans-serif"
@@ -99,6 +99,9 @@ class SvgRenderer:
         for lab in self.schematic.labels:
             xs += [lab.x, lab.x + lab.width]
             ys += [lab.y - 12.0, lab.y]
+        for tag in self.schematic.net_tags:
+            xs += [tag.box[0], tag.box[2]]
+            ys += [tag.box[1], tag.box[3]]
         if not xs:
             return 0.0, 0.0, 600.0, 450.0
         pad = 40.0
@@ -171,6 +174,12 @@ class SvgRenderer:
                 svg.append(self._render_component(comp))
         svg.append("</g>")
 
+        if self.schematic.net_tags:
+            svg.append('<g id="schematic-net-tags">')
+            for tag in self.schematic.net_tags:
+                svg.append(self._render_net_tag(tag))
+            svg.append("</g>")
+
         if self.schematic.labels:
             svg.append('<g id="schematic-labels">')
             for lab in self.schematic.labels:
@@ -183,6 +192,34 @@ class SvgRenderer:
 
         svg.append("</svg>")
         return "\n".join(svg)
+
+    # --------------------------------------------------------------- net tags
+    def _render_net_tag(self, tag: NetTag) -> str:
+        """Stub straight out of the pin, then a tag with the net name."""
+        t = self.t
+        color = self.color_of(tag.net_name)
+        (tx, ty), (sx, sy) = (tag.terminal.x, tag.terminal.y), (tag.stub_end.x, tag.stub_end.y)
+        x0, y0, x1, y1 = tag.box
+        if tag.side == Side.RIGHT:
+            rx0, ry0, rx1, ry1 = sx, y0, x1, y1
+        elif tag.side == Side.LEFT:
+            rx0, ry0, rx1, ry1 = x0, y0, sx, y1
+        elif tag.side == Side.TOP:
+            rx0, ry0, rx1, ry1 = x0, y0, x1, sy
+        else:
+            rx0, ry0, rx1, ry1 = x0, sy, x1, y1
+        cx, cy = (rx0 + rx1) / 2.0, (ry0 + ry1) / 2.0
+        return "\n".join(
+            [
+                f'<g class="net-tag" data-net="{html.escape(tag.net_name)}">',
+                f'<line x1="{tx:.1f}" y1="{ty:.1f}" x2="{sx:.1f}" y2="{sy:.1f}" stroke="{color}" stroke-width="2.2" stroke-linecap="round" />',
+                f'<rect x="{rx0:.1f}" y="{ry0:.1f}" width="{rx1 - rx0:.1f}" height="{ry1 - ry0:.1f}" rx="3" ry="3" '
+                f'fill="{t.comp_bg}" stroke="{color}" stroke-width="1.4" />',
+                f'<text x="{cx:.1f}" y="{cy + 3.2:.1f}" text-anchor="middle" font-family="{FONT_MONO}" font-size="9" '
+                f'font-weight="700" fill="{color}">{html.escape(tag.net_name)}</text>',
+                "</g>",
+            ]
+        )
 
     # -------------------------------------------------------- standard parts
     def _symbol_body(self, kind: str, comp: Component, length: float) -> list[str]:

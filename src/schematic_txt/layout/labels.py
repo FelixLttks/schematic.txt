@@ -25,6 +25,8 @@ def place_net_labels(sch: Schematic) -> list[NetLabel]:
         obstacles.append((c.x - 2, c.y - 14, c.x + c.width + 2, c.y + c.height + 2))
         for p in c.pins.values():
             obstacles.append((p.position.x - 4, p.position.y - 4, p.position.x + 4, p.position.y + 4))
+    for tag in sch.net_tags:
+        obstacles.append((tag.box[0] - 2, tag.box[1] - 2, tag.box[2] + 2, tag.box[3] + 2))
     foreign: dict[str, list[Box]] = {}
     for w in sch.wires:
         box = (
